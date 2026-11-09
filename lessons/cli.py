@@ -3,11 +3,16 @@
   lessons scan                      what's on this machine (counts only)
   lessons mine --out work/shards    export correction moments as redacted JSONL
   lessons dream                     extract / consolidate lessons with a model
-  lessons index                     write INDEX.md (verified lessons, <= 200 lines)
+  lessons index [--scenario S]      write INDEX.md: principles, then verified rules for S (<= 120 lines)
   lessons inject --target CLAUDE.md show the diff; add --apply to write it
-  lessons search "<query>" --cwd    find lessons before a task
+  lessons search "<query>" --cwd    find lessons before a task (--context "<text>" infers the scenario)
+  lessons tree                      principle -> rule -> instance hierarchy, orphans
+  lessons scenarios                 lesson counts per scenario
   lessons view                      browse lessons
-  lessons mcp                       stdio MCP server (search_lessons, get_lesson)
+  lessons mcp                       stdio MCP server (search_lessons, get_lesson, list_principles, infer_scenario)
+
+  Filters for index / inject / search: --scenario <id> (docs/SCENARIOS.md), --level principle|rule|instance
+  (how specific to go; default rule), --strength must|should|prefer (minimum), --all (include candidates).
 """
 from __future__ import annotations
 import argparse, json, os, sys
@@ -160,23 +165,36 @@ def cmd_view(a) -> int:
 
 # ---------------------------------------------------------------- index / inject / search / mcp
 
+def _check_scenario(sc: str | None) -> None:
+    from .scenario import SCENARIOS
+    if sc and sc not in SCENARIOS:
+        print(f"warning: scenario {sc!r} is not in docs/SCENARIOS.md ({', '.join(SCENARIOS)})", file=sys.stderr)
+
+
+def _index_kw(a) -> dict:
+    _check_scenario(a.scenario)
+    return dict(scenario=a.scenario, level=a.level, strength_min=a.strength, include_candidates=a.all,
+                tool=a.tool, max_lines=a.max_lines)
+
+
 def cmd_index(a) -> int:
     from . import index
+    kw = _index_kw(a)
     cwd = None if a.all_projects else (a.cwd or os.getcwd())
     if a.print:
-        sys.stdout.write(index.build(root=a.dir, cwd=cwd, link_base=None))
+        sys.stdout.write(index.build_index(root=a.dir, cwd=cwd, link_base=None, all_projects=a.all_projects, **kw))
         return 0
-    out = index.write(root=a.dir, cwd=cwd, out=a.out)
+    out = index.write(root=a.dir, cwd=cwd, out=a.out, all_projects=a.all_projects, **kw)
     print(f"wrote {out}")
     return 0
 
 
 def cmd_inject(a) -> int:
-    from . import index, inject
+    from . import inject
+    kw = _index_kw(a)
     target = os.path.abspath(a.target)
-    body = index.build(root=a.dir, cwd=os.path.dirname(target), link_base=None)
     try:
-        d = inject.inject(target, body, apply=a.apply)
+        d = inject.inject_index(target, root=a.dir, apply=a.apply, link_base=None, **kw)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -191,18 +209,109 @@ def cmd_inject(a) -> int:
 
 
 def cmd_search(a) -> int:
-    scope = (a.at or os.getcwd()) if (a.cwd or a.at) else None
-    hits = store.search(" ".join(a.query), scope=scope, k=a.k, root=a.dir)
+    from .scenario import infer_scenario
+    where = (a.at or os.getcwd()) if (a.cwd or a.at) else None
+    scenario, inferred = a.scenario, None
+    if not scenario and a.context:
+        inferred = infer_scenario(a.context, where)
+        scenario = inferred[0][0] if inferred else None
+    _check_scenario(scenario)
+    hits = store.search(" ".join(a.query), cwd=where, k=a.k, root=a.dir, scenario=scenario, level_max=a.level,
+                        verified_only=not a.all, strength_min=a.strength)
     if a.json:
-        print(json.dumps([{k: v for k, v in h.items() if k != "body"} for h in hits], ensure_ascii=False, indent=2))
+        print(json.dumps({"scenario": scenario, "inferred": inferred,
+                          "hits": [{k: v for k, v in h.items() if k != "body"} for h in hits]}
+                         if inferred is not None else
+                         [{k: v for k, v in h.items() if k != "body"} for h in hits], ensure_ascii=False, indent=2))
         return 0
+    if inferred is not None:
+        print(f"scenario: {scenario or '(none inferred)'}"
+              + (f"  (from --context: {', '.join(f'{s} {v}' for s, v in inferred)})" if inferred else ""),
+              file=sys.stderr)
     if not hits:
-        print("no matching lessons")
+        print("no matching lessons" + ("" if a.all else " (verified only; --all includes candidates)"))
         return 1
     for h in hits:
         trig = " ".join(str(h.get("trigger", "")).split())
-        print(f"{h['score']:6.2f}  [{h.get('status', '?')}] {h.get('title', h.get('id'))}\n"
-              f"        when: {trig}\n        {h['abspath']}")
+        chain = " < ".join(p["id"] for p in h.get("chain", []))
+        print(f"{h['score']:6.2f}  [{h['level']}, {h['strength']}, {h.get('status', '?')}] "
+              f"{h.get('title', h.get('id'))}\n"
+              f"        when: {trig}\n"
+              + (f"        under: {chain}\n" if chain else "")
+              + f"        {h['abspath']}")
+    return 0
+
+
+def _mark(d: dict) -> str:
+    st = d.get("status", "?")
+    tag = "" if st == "verified" else f" ({st})"
+    sc = ",".join(d.get("scenarios") or [])
+    return f"{d['id']}{tag}  [{d['strength']}; {sc}]"
+
+
+def cmd_tree(a) -> int:
+    ls = store.load(a.dir)
+    if a.scenario:
+        _check_scenario(a.scenario)
+        ls = [d for d in ls if store.scenario_matches(d, a.scenario)]
+    if not a.all:
+        ls = [d for d in ls if d.get("status") != "refuted"]
+    h = store.hierarchy(ls)
+    by_id, kids = h["by_id"], h["children"]
+    lines: list[str] = []
+
+    def walk(i: str, depth: int, seen: set) -> None:
+        if i in seen:
+            return
+        seen.add(i)
+        d = by_id[i]
+        lines.append("  " * depth + ("- " if depth else "") + _mark(d))
+        if depth == 0 and not a.ids_only:
+            lines.append("  " + " ".join(str(d.get("title", "")).split()))
+        for c in kids.get(i, []):
+            walk(c, depth + 1, seen)
+
+    seen: set = set()
+    for p in h["principles"]:
+        walk(p, 0, seen)
+        lines.append("")
+    for label, ids in (("unparented (no parent set)", h["unparented"]),
+                       ("orphans (parent id not found)", h["orphans"])):
+        ids = [i for i in ids if i not in seen]
+        if ids:
+            lines.append(f"{label}: {len(ids)}")
+            for i in ids:
+                walk(i, 1, seen)
+            lines.append("")
+    if h["misleveled"]:
+        lines.append(f"parent not one level up: {', '.join(h['misleveled'])}")
+    n = {lv: sum(1 for d in ls if d["level"] == lv) for lv in store.LEVELS}
+    lines.append(f"{n['principle']} principles, {n['rule']} rules, {n['instance']} instances; "
+                 f"{len(h['orphans'])} orphans, {len(h['unparented'])} unparented")
+    print("\n".join(lines))
+    return 0
+
+
+def cmd_scenarios(a) -> int:
+    from .scenario import SCENARIOS
+    ls = [d for d in store.load(a.dir) if d.get("status") != "refuted"]
+    counts: dict[str, Counter] = defaultdict(Counter)
+    for d in ls:
+        for sc in d.get("scenarios") or ["any"]:
+            counts[sc][d["level"]] += 1
+            counts[sc]["verified" if d.get("status") == "verified" else "candidate"] += 1
+    if a.json:
+        print(json.dumps({k: dict(v) for k, v in sorted(counts.items())}, indent=2))
+        return 0
+    print(f"{'scenario':<22} {'principle':>9} {'rule':>6} {'instance':>8} {'verified':>8} {'candidate':>9}")
+    order = [s for s in SCENARIOS if s in counts] + sorted(s for s in counts if s not in SCENARIOS)
+    for sc in order:
+        c = counts[sc]
+        flag = "" if sc in SCENARIOS else "   (not in vocabulary)"
+        print(f"{sc:<22} {c['principle']:>9} {c['rule']:>6} {c['instance']:>8} {c['verified']:>8} "
+              f"{c['candidate']:>9}{flag}")
+    print(f"\n{len(ls)} lessons; a lesson counts once per scenario it lists. Rules for a scenario also include "
+          "those listing `any`.")
     return 0
 
 
@@ -236,16 +345,30 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("rest", nargs=argparse.REMAINDER)
     s.set_defaults(fn=cmd_dream)
 
-    s = sub.add_parser("index", help="write INDEX.md: verified lessons, <= 200 lines")
+    def filters(s, default_lines: bool = True):
+        from .store import LEVELS, STRENGTHS
+        s.add_argument("--scenario", default=None, help="only lessons for this scenario (principles always)")
+        s.add_argument("--level", choices=LEVELS, default="rule", help="most specific level to include")
+        s.add_argument("--strength", choices=STRENGTHS, default=None, help="minimum strength")
+        s.add_argument("--all", action="store_true", help="include candidates, not only verified lessons")
+        if default_lines:
+            s.add_argument("--tool", default=None, help="include tool:<name> instances for this tool")
+            s.add_argument("--max-lines", type=int, default=120)
+
+    s = sub.add_parser("index", help="write INDEX.md: principles + verified rules, <= 120 lines")
     s.add_argument("--out", default=None, help="default <lessons dir>/INDEX.md")
     s.add_argument("--cwd", default=None, help="project whose lessons to include (default: current directory)")
     s.add_argument("--all-projects", action="store_true", help="include verified lessons from every project")
     s.add_argument("--print", action="store_true", help="print instead of writing")
+    filters(s)
+    s.add_argument("--dir", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_index)
 
     s = sub.add_parser("inject", help="put the index into CLAUDE.md / AGENTS.md between markers")
     s.add_argument("--target", required=True, help="CLAUDE.md, AGENTS.md, or any path")
     s.add_argument("--apply", action="store_true", help="write the file (default: print a diff)")
+    filters(s)
+    s.add_argument("--dir", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_inject)
 
     s = sub.add_parser("search", help="rank lessons for a query")
@@ -254,13 +377,29 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--at", default=None, help="scope to this directory's project")
     s.add_argument("-k", type=int, default=8)
     s.add_argument("--json", action="store_true")
+    s.add_argument("--context", default=None, help="text of the current task; infers --scenario when not given")
+    filters(s, default_lines=False)
+    s.add_argument("--dir", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_search)
+
+    s = sub.add_parser("tree", help="print the principle -> rule -> instance hierarchy")
+    s.add_argument("--scenario", default=None)
+    s.add_argument("--all", action="store_true", help="include refuted lessons")
+    s.add_argument("--ids-only", action="store_true", help="omit principle titles")
+    s.add_argument("--dir", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_tree)
+
+    s = sub.add_parser("scenarios", help="count lessons per scenario and level")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--dir", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_scenarios)
 
     s = sub.add_parser("view", help="browse lessons", add_help=False)
     s.add_argument("rest", nargs=argparse.REMAINDER)
     s.set_defaults(fn=cmd_view)
 
     s = sub.add_parser("mcp", help="run the stdio MCP server")
+    s.add_argument("--dir", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_mcp)
     return p
 

@@ -45,3 +45,13 @@ def inject(target: str, body: str, apply: bool = False) -> str:
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(new)
     return d
+
+
+def inject_index(target: str, root: str | None = None, scenario: str | None = None, level: str = "rule",
+                 apply: bool = False, cwd: str | None = None, **kw) -> str:
+    """Build the v1 index for `scenario`/`level` (project instances for the target's folder unless cwd is
+    given) and put it in target's marker block. Returns the diff; writes only with apply=True."""
+    from . import index
+    body = index.build_index(root=root, scenario=scenario, level=level,
+                             cwd=cwd or os.path.dirname(os.path.abspath(target)), **kw)
+    return inject(target, body, apply=apply)

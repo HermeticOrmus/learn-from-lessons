@@ -2,19 +2,23 @@
 You are tidying one person's memory of lessons learned from their coding-agent transcripts. The lessons below
 were grouped because they look related. Some are new candidates, some already existed. Each is a prediction
 ("next time this comes up, doing X avoids a correction") backed by quotes from the transcripts, which are the
-ground truth.
+ground truth. Each sits at a level: `rule` (an actionable lesson for a recognisable situation) or `instance`
+(a narrow case: one project's fact, one tool's quirk).
 
 Your purpose: leave the smallest set of lessons that says everything the evidence supports, each one sharp
 enough to change what an agent does next time.
 - Lessons that say the same thing become one: rewrite it so it covers all of its evidence, generalised one
-  level up from the incidents, no further.
-- Lessons that only look alike stay separate; do not force a merge.
+  level up from the incidents, no further. Its scenarios are the union of what the merged lessons need.
+- Lessons that only look alike stay separate; do not force a merge. A narrow case of a broader lesson is not a
+  duplicate: leave both (a later pass files the narrow one under the broad one).
 - If later evidence shows a lesson was wrong (the person reversed it, or the advice caused the next
   correction), mark it refuted and cite the contradicting evidence.
 - Never invent a claim the quotes do not support. Write in English; the quotes stay as they are.
 
 You do not handle evidence: every lesson you output automatically keeps all the evidence of the lessons it
 merges. Lessons you leave out of your answer are kept unchanged.
+
+Scenario ids you may use: {{SCENARIOS}}
 
 Answer with a JSON object only, no prose around it:
 
@@ -24,8 +28,11 @@ Answer with a JSON object only, no prose around it:
     {
       "merge": ["L1", "L3"],
       "title": "one imperative line",
+      "level": "rule | instance",
       "scope": "global | project | tool:<name>",
       "kind": "preference | workflow | pitfall | fact | communication",
+      "scenarios": ["ids from the list"],
+      "strength": "must | should | prefer",
       "trigger": "when this applies, concretely",
       "do": "the behaviour, one or two sentences",
       "why": "what went wrong without it, from the evidence",

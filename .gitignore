@@ -1,6 +1,7 @@
 # Personal data: transcripts excerpts, extracted lessons and generated sites never go into the repo.
 work/
 library/
+library-*/
 .lessons/
 *.dream/
 __pycache__/

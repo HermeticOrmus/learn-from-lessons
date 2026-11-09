@@ -22,6 +22,11 @@ from . import frontmatter
 
 MOMENT_KINDS = ["correction", "frustration", "interrupt", "repeated-error"]
 STATUSES = ["verified", "candidate", "refuted"]
+LEVELS = ["principle", "rule", "instance"]
+STRENGTHS = ["must", "should", "prefer"]
+SCENARIOS = ["any", "writing-paper", "writing-outward", "figures-visual", "coding", "debugging", "experiments",
+             "research-ideation", "planning-discussion", "release-deploy", "reporting", "long-autonomous",
+             "cost-resources"]  # docs/SCENARIOS.md order; unknown ids are kept and sorted after these
 _TEMPLATE = Path(__file__).with_name("templates") / "view.html"
 
 # ---------------------------------------------------------------- loading
@@ -53,6 +58,36 @@ def _day(v) -> str:
     return m.group(1) if m else ""
 
 
+def _list(v) -> list[str]:
+    """A frontmatter list (or comma-separated string) as stripped, non-empty strings."""
+    items = v if isinstance(v, list) else str(v or "").split(",")
+    return [x for x in (_s(t).strip() for t in items) if x]
+
+
+def tokens_estimate(text: str) -> int:
+    """Same rough rule as dream.tokens_estimate: ~4 ASCII chars per token, one per other character."""
+    ascii_n = sum(1 for c in text if ord(c) < 128)
+    return ascii_n // 4 + (len(text) - ascii_n)
+
+
+_SECTION = re.compile(r"^\s*\*\*(Do|Why|Check)\s*:\*\*\s*", re.I)
+
+
+def split_sections(body: str) -> dict:
+    """{"do", "why", "check", "rest"} markdown from a lesson body (paragraphs starting with **Do:** etc.)."""
+    out = {"do": [], "why": [], "check": [], "rest": []}
+    cur = "rest"
+    for para in re.split(r"\n\s*\n", body.strip()):
+        m = _SECTION.match(para)
+        if m:
+            cur = m.group(1).lower()
+            para = para[m.end():]
+        elif cur != "rest" and not para.lstrip().startswith(("-", "*", "1.")):
+            cur = "rest"
+        out[cur].append(para)
+    return {k: "\n\n".join(v).strip() for k, v in out.items()}
+
+
 def _week(day: str) -> str:
     d = date.fromisoformat(day)
     return (d - timedelta(days=d.weekday())).isoformat()
@@ -80,9 +115,9 @@ def load_lessons(lessons_dir) -> tuple[list[dict], list[str]]:
                            "date": _day(e.get("date")) or _s(e.get("date")), "quote": _s(e.get("quote"))})
             elif e:
                 ev.append({"ref": _s(e), "source": "", "date": "", "quote": ""})
-        themes = meta.get("themes") or []
-        themes = [_s(t) for t in (themes if isinstance(themes, list) else str(themes).split(","))]
-        themes = [t.strip() for t in themes if t.strip()]
+        themes = _list(meta.get("themes"))
+        level = _s(meta.get("level")).lower().strip() or "rule"  # v0 files have no level: they are rules
+        sections = split_sections(body)
         try:
             seen = int(meta.get("seen"))
         except (TypeError, ValueError):
@@ -100,12 +135,24 @@ def load_lessons(lessons_dir) -> tuple[list[dict], list[str]]:
             "first_seen": _day(meta.get("first_seen")) or (dates[0] if dates else ""),
             "last_seen": _day(meta.get("last_seen")) or (dates[-1] if dates else ""),
             "themes": themes,
+            "level": level,
+            "parent": _s(meta.get("parent")).strip(),
+            "scenarios": [x.lower() for x in _list(meta.get("scenarios"))],
+            "strength": _s(meta.get("strength")).lower().strip(),
+            "do_html": render_markdown(sections["do"]),
+            "why_html": render_markdown(sections["why"]),
+            "check_html": render_markdown(sections["check"]),
+            "rest_html": render_markdown(sections["rest"]),
+            "tokens": tokens_estimate(" ".join([_s(meta.get("title")) or p.stem, _s(meta.get("trigger")),
+                                                sections["do"]])) + 4,
             "sources": sorted({e["source"] for e in ev if e["source"]}),
             "path": str(p.relative_to(root)),
             "file": str(p.resolve()),
             "body_html": render_markdown(body),
         }
         missing = [k for k in ("id", "title", "kind", "status", "trigger") if not meta.get(k)]
+        if level not in LEVELS:
+            warnings.append(f"{lesson['path']}: unknown level {level!r}")
         if missing:
             warnings.append(f"{lesson['path']}: missing {', '.join(missing)}")
         lessons.append(lesson)
@@ -117,7 +164,80 @@ def load_lessons(lessons_dir) -> tuple[list[dict], list[str]]:
             l["id"] = f"{l['id']}~{l['path']}"
     order = {s: i for i, s in enumerate(STATUSES)}
     lessons.sort(key=lambda l: (order.get(l["status"], 9), -l["seen"], l["title"].lower()))
+    warnings += build_hierarchy(lessons)
     return lessons, warnings
+
+
+def _rank(l: dict) -> tuple:
+    st = {s: i for i, s in enumerate(STRENGTHS)}
+    return (st.get(l["strength"], 9), {s: i for i, s in enumerate(STATUSES)}.get(l["status"], 9), -l["seen"],
+            l["title"].lower())
+
+
+def build_hierarchy(lessons: list[dict]) -> list[str]:
+    """Link parent -> children in place. Sets children (ids, ranked), ancestors (root first), root, depth.
+
+    A parent that is missing, is the lesson itself, or would close a cycle is dropped (with a warning), so the
+    lesson becomes a root. A level mismatch (a rule under a rule) is only warned about: the link is kept."""
+    by = {l["id"]: l for l in lessons}
+    warnings = []
+    for l in lessons:
+        l["children"] = []
+        p = l["parent"]
+        if p and p not in by:
+            warnings.append(f"{l['path']}: parent {p!r} not found")
+            l["parent"] = ""
+        elif p == l["id"]:
+            warnings.append(f"{l['path']}: is its own parent")
+            l["parent"] = ""
+    for l in lessons:  # break cycles: walk up; if we come back to l, cut l's link
+        seen, cur = set(), l
+        while cur["parent"]:
+            if cur["id"] in seen:
+                break
+            seen.add(cur["id"])
+            cur = by[cur["parent"]]
+            if cur is l:
+                warnings.append(f"{l['path']}: parent cycle through {l['parent']!r}")
+                l["parent"] = ""
+                break
+    expect = {"rule": "principle", "instance": "rule"}
+    for l in lessons:
+        if l["parent"]:
+            par = by[l["parent"]]
+            par["children"].append(l["id"])
+            if l["level"] == "principle" or (l["level"] in expect and par["level"] != expect[l["level"]]):
+                warnings.append(f"{l['path']}: {l['level']} under {par['level']} {par['id']!r}")
+    for l in lessons:
+        l["children"].sort(key=lambda i: _rank(by[i]))
+        chain, cur = [], l
+        while cur["parent"]:
+            cur = by[cur["parent"]]
+            chain.append(cur["id"])
+        l["ancestors"] = chain[::-1]
+        l["root"] = (chain[-1] if chain else l["id"])
+        l["depth"] = len(chain)
+    return warnings
+
+
+def related_edges(lessons: list[dict], per_node: int = 3) -> list[list]:
+    """Light edges between lessons that share themes or specific scenarios (not "any"), skipping pairs that
+    are already parent/child. Each lesson keeps its `per_node` strongest; returns [a, b, weight, why]."""
+    cand = {}
+    for i, a in enumerate(lessons):
+        for b in lessons[i + 1:]:
+            if a["parent"] == b["id"] or b["parent"] == a["id"]:
+                continue
+            th = sorted(set(a["themes"]) & set(b["themes"]))
+            sc = sorted((set(a["scenarios"]) & set(b["scenarios"])) - {"any"})
+            w = len(th) + 0.5 * len(sc)
+            if w >= 1:
+                cand[(a["id"], b["id"])] = (w, ", ".join(th + sc))
+    keep = set()
+    for l in lessons:
+        mine = sorted(((w, k) for k, (w, _) in cand.items() if l["id"] in k), key=lambda t: (-t[0], t[1]))
+        keep.update(k for _, k in mine[:per_node])
+    return [[a, b, cand[(a, b)][0], cand[(a, b)][1]] for a, b in sorted(keep)]
 
 
 def load_moments(pattern: str | None) -> list[dict]:
@@ -322,11 +442,21 @@ def build_site(lessons_dir, out_dir, moments_glob=None) -> Path:
         return sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))
 
     status = Counter(l["status"] for l in lessons)
+
+    def ordered(key, vocab):
+        c = Counter()
+        for l in lessons:
+            c.update(l[key] if isinstance(l[key], list) else [l[key]] if l[key] else [])
+        return [(s, c[s]) for s in vocab if c[s]] + sorted((s, n) for s, n in c.items() if s not in vocab)
+
     data = {
         "lessons": lessons,
         "facets": {
             "status": [(s, status[s]) for s in STATUSES if status[s]]
                       + sorted((s, n) for s, n in status.items() if s not in STATUSES),
+            "level": ordered("level", LEVELS),
+            "strength": ordered("strength", STRENGTHS),
+            "scenario": ordered("scenarios", SCENARIOS),
             "kind": tally("kind"),
             "scope": tally("scope_label"),
             "source": tally("sources"),
@@ -335,6 +465,7 @@ def build_site(lessons_dir, out_dir, moments_glob=None) -> Path:
         "moments": {"total": len(moments), "by_kind": dict(Counter(m["kind"] for m in moments)),
                     "by_source": dict(Counter(m["source"] for m in moments)),
                     "from": span[0] if moments else "", "to": span[-1] if moments else ""},
+        "graph": {"related": related_edges(lessons)},
         "warnings": warnings,
         "lessons_dir": str(Path(lessons_dir).resolve()),
         "built": datetime.now().strftime("%Y-%m-%d %H:%M"),

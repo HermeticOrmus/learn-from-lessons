@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Learn from Lessons: Turning Coding-Agent Corrections into Verified, Evidence-Linked Lessons"
+type: software
+authors:
+  - name: "HumanStudy-Hub contributors"
+version: "0.0.1"
+date-released: "2026-11-08"
+license: MIT
+repository-code: "https://github.com/HumanStudy-Hub/learn-from-lessons"
+url: "https://github.com/HumanStudy-Hub/learn-from-lessons"
+abstract: >-
+  Learn from Lessons reads local coding-agent transcripts (Claude Code, Codex, opencode), finds the moments
+  where the person corrected, stopped or redirected the agent, and consolidates them into verified,
+  evidence-linked, hierarchical lessons that agents load through a skill, an AGENTS.md block or an MCP server.
+keywords:
+  - agent memory
+  - coding agents
+  - claude-code
+  - codex
+  - opencode
+  - mcp
+  - human feedback
+references:
+  - type: article
+    authors:
+      - name: "Anthropic"
+    title: "The Components of Agent Memory"
+    year: 2026
+    url: "https://www.anthropic.com/research/components-of-agent-memory"

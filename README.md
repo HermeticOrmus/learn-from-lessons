@@ -1,113 +1,211 @@
-# learn-from-lessons
+# Learn from Lessons
 
-**Your coding agents keep making the mistakes you already corrected. This turns those corrections into lessons they read next time.**
+**A tool and agent skill that lets your coding agents learn from the corrections you already gave them.**
 
-`lessons` reads the transcripts that Claude Code, Codex and opencode already keep on your disk, finds the moments
-where you pushed back ("no, I said…", an interrupt, the same tool failing three times), and turns them into short
-lessons. Each lesson cites the transcript turns it came from and says whether it has held up across sessions. Any
-agent can then use them: an always-loaded index in `CLAUDE.md` / `AGENTS.md`, a CLI search, or an MCP server.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Works with](https://img.shields.io/badge/works%20with-Claude%20Code%20·%20Codex%20·%20opencode%20·%20MCP-555.svg)](#integrations)
+[![Status: prototype](https://img.shields.io/badge/status-prototype-orange.svg)](#roadmap)
 
-Zero dependencies (Python ≥ 3.10 stdlib). Everything stays on your machine.
+![Learn from Lessons: lessons graph and evidence view](docs/assets/hero.png)
 
-## Why
+`lessons` reads the transcripts that Claude Code, Codex and opencode already keep on your disk. It finds the
+moments where you corrected, stopped or redirected the agent, and turns them into short lessons. Each lesson
+cites the transcript turns it came from, says whether it has held up in more than one conversation, and sits in a
+hierarchy (**principle → rule → instance**) that can be filtered by scenario. Agents read the lessons through a
+Claude Code skill, an `AGENTS.md` block, or an MCP server.
 
-Each agent session starts from zero, and so does each tool. A correction you gave Claude Code on Monday is unknown
-to Codex on Tuesday, and to Claude Code itself next week. Hand-written `CLAUDE.md` rules help, but they are written
-from memory, go stale, and grow until nobody reads them.
+No dependencies beyond the Python ≥ 3.10 standard library. Your transcripts and lessons stay on your machine.
 
-This project follows Anthropic's
-[components of agent memory](https://www.anthropic.com/research/components-of-agent-memory):
+> **Status: prototype (v0.0.1).** The pipeline runs end to end on the author's machine. The evaluation has not
+> been run yet ([Evaluation](#evaluation)), and flags and file formats may still change.
 
-- **Transcripts are the ground truth.** Lessons are derived from them and always point back to them.
-- **A lesson is a prediction, not a fact.** It is `candidate` until it holds in a second session, then `verified`;
-  it can be `refuted`.
-- **Consolidate, don't append.** `lessons dream` merges near-duplicates and rewrites lessons when new evidence
-  arrives instead of piling up notes.
-- **Keep the always-loaded layer small.** The injected index holds verified lessons only, one line each, at most
-  200 lines; agents search the rest on demand.
+---
+
+## Contents
+
+[Quickstart](#30-second-quickstart) · [What a lesson looks like](#what-a-lesson-looks-like) · [Why](#why) ·
+[How it works](#how-it-works) · [Integrations](#integrations) · [Parameters](#parameters) · [Commands](#commands) ·
+[Privacy](#privacy) · [Evaluation](#evaluation) · [Roadmap](#roadmap) ·
+[Call for collaboration](#call-for-collaboration) · [Citation](#citation)
 
 ## 30-second quickstart
 
 ```bash
-# try it without installing (reads your local transcripts, prints counts only)
-uvx --from git+https://github.com/HumanStudy-Hub/learn-from-lessons lessons scan
+uvx learn-from-lessons scan          # run once without installing
+# or
+pipx install learn-from-lessons      # installs the `lessons` command
 
-# or install it
-pipx install git+https://github.com/HumanStudy-Hub/learn-from-lessons
-lessons scan
+lessons scan     # what is on this machine: sessions, human sessions, moments (counts only, no model)
+lessons dream    # extract + consolidate lessons, using the agent CLI you already have as the model
+lessons view     # browse lessons, their evidence and the graph in a local HTML page
 ```
 
-`scan` output looks like this (format only; your counts will differ):
+> Until the first PyPI release, install from GitHub:
+> `pipx install git+https://github.com/HumanStudy-Hub/learn-from-lessons`
+> (or `uvx --from git+https://github.com/HumanStudy-Hub/learn-from-lessons lessons scan`).
 
-```
-source        sessions  subagent   human  user turns   moments
-claude-code        ...       ...     ...         ...   interrupt …, correction …, frustration …, repeated-error …
-codex              ...
-opencode           ...
-```
+`dream` calls whichever agent CLI is installed (`claude -p`, `codex exec` or `opencode run`), so it uses your
+existing login and costs model calls. `lessons dream --dry-run` prints the prompts without calling anything, and
+`--max-batches N` caps a run (default 10). For scale: on the author's machine one extract batch of about 20
+moments cost about $0.09 with `claude -p`.
 
-Then:
+Then put the lessons in front of your agents:
 
 ```bash
-lessons dream                         # extract + consolidate lessons, using your own agent CLI as the model
-lessons search "deploy to vercel" --cwd
-lessons inject --target CLAUDE.md     # shows a diff; add --apply to write it
-lessons view                          # browse lessons and their evidence in a local HTML page
+lessons inject --target CLAUDE.md          # prints a diff; add --apply to write it
+lessons search "deploy to vercel" --cwd    # what an agent runs before a risky task
 ```
 
-`dream` calls whichever agent CLI you have (`claude -p`, `codex exec` or `opencode run`), so it uses your existing
-login and costs model calls. `lessons dream --dry-run` shows the prompts without calling anything;
-`--max-batches N` caps a run.
+| Lesson graph | Lesson list |
+|---|---|
+| ![Graph view](docs/assets/graph.png) | ![List view](docs/assets/list.png) |
 
 ## What a lesson looks like
 
-One Markdown file per lesson under `~/.lessons/lessons/<scope>/` (full spec: [docs/LESSON_FORMAT.md](docs/LESSON_FORMAT.md)).
-An illustrative example:
+One Markdown file per lesson under `~/.lessons/lessons/<scope>/`. Full spec:
+[docs/LESSON_FORMAT.md](docs/LESSON_FORMAT.md) (v1). This example is **synthetic**: one principle, and one of
+the rules that supports it.
 
 ```markdown
 ---
-id: verify-numbers-against-source
-title: Check every number against the source table before reporting it
+id: ask-before-irreversible
+title: Ask before any step the person cannot undo
+level: principle
+parent:
 scope: global
-kind: pitfall
-trigger: writing up statistics, results or counts taken from a paper or a data file
+kind: workflow
+scenarios: [any]
+strength: must
+trigger: an action that publishes, deletes, spends money or rewrites shared history
+status: verified
+seen: 4
+themes: [consent, irreversible]
+---
+
+**Do:** Stop and ask for an explicit go-ahead before an irreversible step, even when it seems implied.
+
+**Why:** Supported by its rules (push-only-after-go-ahead, ask-before-paid-run).
+```
+
+```markdown
+---
+id: push-only-after-go-ahead
+title: Push or open a PR only after an explicit go-ahead for this batch
+level: rule
+parent: ask-before-irreversible
+scope: global
+kind: workflow
+scenarios: [coding, release-deploy]
+strength: must
+trigger: about to run git push, gh pr create, or a deploy
 status: verified
 evidence:
-  - ref: ~/.claude/projects/-Users-me-paper/3f1c….jsonl:412
+  - ref: ~/.claude/projects/-Users-me-webapp/3f1c….jsonl:412
     source: claude-code
     date: 2026-09-14
-    quote: "no, Table 2 says 0.31 not 0.42, where did you get that"
+    quote: "stop, I didn't say push yet"
   - ref: ~/.codex/sessions/2026/10/02/rollout-….jsonl:88
     source: codex
     date: 2026-10-02
-    quote: "these numbers don't match the csv again"
+    quote: "why did you open a PR, I wanted to review the diff first"
 seen: 2
 first_seen: 2026-09-14
 last_seen: 2026-10-02
+themes: [git, push, consent]
 ---
 
-**Do:** Before writing a number into prose, open the table or file it comes from and copy it from there.
+**Do:** Commit locally, show the diff, and wait for "push" before pushing or opening a PR.
 
-**Why:** Twice the reported value was recalled rather than read, and the person had to catch it.
+**Why:** Twice the agent pushed work the person still wanted to review, and they had to stop it.
 
-**Check:** Every number you wrote has a file and location you just looked at.
+**Check:** You have a message from the person, after the last commit, that says to push.
 ```
 
-Scopes are `global`, `project:<path>` (only shown when you work inside that project) and `tool:<name>`.
-Kinds are `preference`, `workflow`, `pitfall`, `fact` and `communication`.
+| field | values |
+|---|---|
+| `level` | `principle` (few, always loaded) · `rule` (most lessons) · `instance` (a project fact or tool quirk) |
+| `scope` | `global` · `project:<path>` (only shown inside that project) · `tool:<claude-code\|codex\|opencode>` |
+| `kind` | `preference` · `workflow` · `pitfall` · `fact` · `communication` |
+| `scenarios` | from a small fixed vocabulary in [docs/SCENARIOS.md](docs/SCENARIOS.md): `coding`, `writing-paper`, `release-deploy`, … |
+| `strength` | `must` (the person stopped or reverted the agent) · `should` · `prefer` |
+| `status` | `candidate` → `verified` once seen in ≥ 2 distinct conversations (forks counted once) · `refuted` |
 
-## Plug it into your agents
+## Why
 
-**Claude Code** — the index plus a skill that tells the agent when to search:
+- **Agents start every session from zero, and every tool from zero.** Something you told Claude Code on Monday is
+  unknown to Codex on Tuesday, and to Claude Code itself the next week.
+- **Corrections tell you the most.** Usually the agent did what was asked. A correction, an interrupt, or the same
+  tool failing three times marks the place where it did not, and the turns around it say why.
+- **Hand-written `CLAUDE.md` rules drift.** They are written from memory, carry no evidence, and grow until nobody
+  reads them. Here every lesson points back to the turns it came from and has to recur before it is injected.
+- **The transcripts already exist.** Claude Code, Codex and opencode all write them to disk, so there is nothing
+  new to record.
+
+What one person's history yields (the author's machine, 2026-11-08):
+
+| | |
+|---|---|
+| Claude Code sessions on disk | 19,770, of which ~130 were conversations with a person (the rest one-turn scripted runs) |
+| Codex / opencode human sessions | 25 / 3 |
+| moments, after removing forked/resumed duplicates | 1,052: 373 corrections, 424 interrupts, 203 frustration, 52 repeated tool failures |
+| candidates → lessons | 161 hand-extracted candidates consolidated into 74 lessons, 54 verified |
+| evidence quotes re-checked against transcripts | 484, of which 467 matched exactly |
+
+## How it works
+
+The design follows Anthropic's
+[**The Components of Agent Memory**](https://www.anthropic.com/research/components-of-agent-memory). In that
+framing transcripts are the ground truth, derived notes are predictions that need evidence, a consolidation pass
+("dreaming") rewrites and checks those notes instead of appending to them, and the layer injected into every
+session stays small. We took this structure from the article. Any mistakes in applying it are ours.
+
+```mermaid
+flowchart BT
+  L1["<b>1 · Transcripts</b><br/>~/.claude/projects · ~/.codex/sessions · opencode SQLite<br/><i>ground truth</i>"]
+  L2["<b>2 · Moments</b><br/>corrections · interrupts · frustration · repeated tool errors<br/><i>regex signals, no model</i>"]
+  L3["<b>3 · Lessons</b><br/>principle → rule → instance, with evidence<br/><i>searched on demand</i>"]
+  L4["<b>4 · Index</b><br/>block in CLAUDE.md / AGENTS.md<br/><i>verified only · ≤ 200 lines</i>"]
+  L1 -- "lessons scan / mine" --> L2
+  L2 -- "dream: extract" --> C["candidates"]
+  C -- "dream: consolidate<br/>merge · rewrite · refute" --> L3
+  L3 -- "lessons index / inject" --> L4
+  L3 -. "every evidence ref<br/>points back" .-> L1
+  L3 -- "next dream: existing lessons<br/>re-clustered with new candidates" --> C
+```
+
+1. **Read.** Each tool's history is parsed into one shape, a `Session` holding a list of `Turn`s
+   ([`lessons/sources/`](lessons/sources/)). Subagents and one-turn scripted runs are skipped.
+2. **Find moments, without a model** ([`lessons/signals.py`](lessons/signals.py)). A moment is a user turn that
+   opens with a correction (English and Chinese patterns), an interrupt, frustration, or a third failure in a
+   row from the same tool. Turns copied into forked or resumed sessions count once.
+3. **Dream, part 1: extract.** Moments and the turns before them are sent to the model in batches. It proposes
+   lessons that cite refs. Evidence citing a ref that was not in the batch is thrown away, and so is a lesson
+   left with none. Dates and `seen` are computed from the transcripts, never taken from the model.
+4. **Dream, part 2: consolidate.** New candidates and existing lessons are clustered locally. The model merges,
+   keeps apart or refutes each cluster. Evidence is only ever unioned, never deleted, and every change is
+   written to `CHANGELOG.md`. Runs are incremental: sessions that have not changed are skipped.
+5. **Serve.** A small index of verified lessons goes into every session. Everything else is reached through
+   search (BM25, verified and same-project lessons ranked first).
+
+More detail, including what is deliberately left out: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
+
+## Integrations
+
+`lessons inject` only ever rewrites the text between `<!-- learn-from-lessons:start -->` and
+`<!-- learn-from-lessons:end -->`. The rest of the file is left alone, and without `--apply` it only prints a diff.
+
+**Claude Code**: the index, plus a skill that tells the agent when to search.
 
 ```bash
-lessons inject --target CLAUDE.md --apply              # or ~/.claude/CLAUDE.md for every project
-mkdir -p ~/.claude/skills/learn-from-lessons && cp skill/SKILL.md ~/.claude/skills/learn-from-lessons/
-claude mcp add lessons -- lessons mcp                  # optional: search_lessons / get_lesson tools
+lessons inject --target ~/.claude/CLAUDE.md --apply      # or ./CLAUDE.md for one project
+mkdir -p ~/.claude/skills/learn-from-lessons
+cp skill/SKILL.md ~/.claude/skills/learn-from-lessons/
+claude mcp add lessons -- lessons mcp                    # optional: search_lessons / get_lesson tools
 ```
 
-**Codex** — `lessons inject --target AGENTS.md --apply`, paste [integrations/AGENTS.md](integrations/AGENTS.md)
-into your `AGENTS.md`, and optionally add the MCP server to `~/.codex/config.toml`:
+**Codex / opencode**: paste [integrations/AGENTS.md](integrations/AGENTS.md) into your `AGENTS.md`, then run
+`lessons inject --target AGENTS.md --apply`. MCP is optional. For Codex, in `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.lessons]
@@ -115,77 +213,162 @@ command = "lessons"
 args = ["mcp"]
 ```
 
-**opencode** — same `AGENTS.md` steps; MCP in `opencode.json`:
+For opencode, in `opencode.json`:
 
 ```json
 { "mcp": { "lessons": { "type": "local", "command": ["lessons", "mcp"] } } }
 ```
 
-**Any MCP client** — `lessons mcp` is a stdio server (JSON-RPC 2.0, no SDK) with two tools:
-`search_lessons(query, cwd?)` and `get_lesson(id)`.
+**Claude Desktop, Cursor and other MCP clients**: `lessons mcp` is a stdio server (newline-delimited JSON-RPC
+2.0, no SDK). Add it to `claude_desktop_config.json` or `.cursor/mcp.json`:
 
-`inject` only ever rewrites the text between `<!-- learn-from-lessons:start -->` and
-`<!-- learn-from-lessons:end -->`; the rest of your file is untouched, and without `--apply` it only prints a diff.
-
-## Privacy
-
-- **Local only.** `scan`, `mine`, `index`, `inject`, `search`, `view` and `mcp` make no network calls.
-  `dream` sends redacted transcript excerpts to the agent CLI you already use, which is the same place those
-  transcripts came from.
-- **Redaction.** API keys (`sk-…`), GitHub/Slack/AWS tokens, JWTs, private keys and `password=`-style values
-  are replaced before an excerpt is exported or written into a lesson ([lessons/redact.py](lessons/redact.py)).
-  It is pattern-based: review lessons before you share them.
-- **Your files.** Lessons are plain Markdown in `~/.lessons` (override with `--dir` or `LESSONS_DIR`). Delete
-  the folder and it is gone.
-
-## How it works
-
-```
- Layer 4  INDEX block in CLAUDE.md / AGENTS.md   always loaded · verified only · ≤ 200 lines
-              ▲  lessons index / inject
- Layer 3  lesson files (~/.lessons/lessons)      searched on demand: lessons search · MCP · skill
-              ▲  lessons dream  (extract → consolidate: merge, rewrite, refute; never just append)
- Layer 2  moments                                corrections, interrupts, frustration, repeated tool errors
-              ▲  lessons scan / mine  (regex signals, no model)
- Layer 1  transcripts                            ~/.claude/projects · ~/.codex/sessions · opencode SQLite
-                                                 ground truth; every lesson links back here
+```json
+{
+  "mcpServers": {
+    "lessons": { "command": "lessons", "args": ["mcp"] }
+  }
+}
 ```
 
-1. **Read** each tool's history into one shape (a session is a list of turns) — `lessons/sources/`.
-2. **Find moments** without a model: a user turn that starts with a correction, an interrupt, frustration, or a
-   tool failing three times in a row — `lessons/signals.py`. Only sessions with a person in them (not subagents,
-   at least 3 user turns) count.
-3. **Dream**: batches of moments with their preceding turns go to the model, which proposes lessons citing exact
-   refs; lessons citing refs that were not in the batch are dropped, and dates and `seen` come from the transcripts,
-   not the model. A second pass clusters similar lessons and merges or refutes them. Evidence is only ever added.
-4. **Serve** the result: a small index for every session, search for the rest.
+| MCP tool | arguments | returns |
+|---|---|---|
+| `search_lessons` | `query`, `cwd?`, `k?` (default 8) | ranked ids, status, kind, scope, trigger |
+| `get_lesson` | `id` | the full lesson file, evidence included |
+
+## Parameters
+
+How much reaches the agent is set by the lesson fields above and by these knobs.
+
+| parameter | where | what it does | status |
+|---|---|---|---|
+| `k` | `lessons search -k`, MCP `k` | max results (default 8) | available |
+| scope | `lessons search --cwd` / `--at DIR`, MCP `cwd` | drop other projects' lessons, rank this project's higher | available |
+| verified-only | `lessons index` / `inject` | the injected index holds verified lessons only, ≤ 200 lines; when it overflows, the most-seen lessons are kept | available (always on for the index) |
+| level (abstraction) | `--level principle\|rule\|instance` | how specific the injected layer may get: principles only, up to rules, or everything | specified in [LESSON_FORMAT.md](docs/LESSON_FORMAT.md), flag in progress |
+| scenario | `--scenario coding,release-deploy` | only lessons whose `scenarios` match (plus `any`) | in progress |
+| strength | `--strength must\|should\|prefer` | minimum strength to include | in progress |
+| verified-only for search | `--verified-only` | hide candidates from search results (today they rank below verified ones) | in progress |
+| dream budget | `lessons dream --max-batches`, `--batch-tokens`, `--budget-usd`, `--engine`, `--model` | how much model work one run may do, and with which CLI | available |
+
+Run `lessons <command> --help` for the flags your installed version supports.
 
 ## Commands
 
-| command | what it does |
-|---|---|
-| `lessons scan` | sessions, human sessions, user turns and moments per source (counts only) |
-| `lessons mine --out work/shards` | export moments as redacted JSONL shards, grouped by project |
-| `lessons dream` | extract and consolidate lessons (`--dry-run`, `--max-batches`, `--engine`) |
-| `lessons index` | write `INDEX.md` in the lessons dir (verified, ≤ 200 lines) |
-| `lessons inject --target FILE [--apply]` | put the index into `CLAUDE.md` / `AGENTS.md` between markers |
-| `lessons search "<query>" [--cwd]` | BM25 over title, trigger, themes and body; verified and same-project first |
-| `lessons view` | static HTML viewer for lessons and their evidence |
-| `lessons mcp` | stdio MCP server |
+| command | what it does | model calls |
+|---|---|---|
+| `lessons scan` | sessions, human sessions, user turns and moments per source (counts only) | no |
+| `lessons mine --out work/shards` | export moments as redacted JSONL shards, grouped by project | no |
+| `lessons dream` | extract and consolidate lessons (`--dry-run`, `--max-batches`, `--engine`, …) | **yes** |
+| `lessons index` | write `INDEX.md` in the lessons dir (verified, ≤ 200 lines) | no |
+| `lessons inject --target FILE [--apply]` | put the index into `CLAUDE.md` / `AGENTS.md` between markers | no |
+| `lessons search "<query>" [--cwd]` | BM25 over title, trigger, themes and body | no |
+| `lessons view [--open]` | static HTML viewer for lessons, evidence and the graph | no |
+| `lessons mcp` | stdio MCP server | no |
+
+Lessons live in `~/.lessons` (override with `--dir` or `LESSONS_DIR`).
+
+## Privacy
+
+- **Local by default.** `scan`, `mine`, `index`, `inject`, `search`, `view` and `mcp` make no network calls.
+- **`dream` is the one exception.** It sends redacted transcript excerpts to the agent CLI you already use, which is
+  where those transcripts came from in the first place. `--dry-run` shows exactly what would be sent.
+- **Redaction.** API keys (`sk-…`), GitHub, Slack and AWS tokens, JWTs, private keys and `password=`-style values
+  are replaced before an excerpt is exported or written into a lesson ([lessons/redact.py](lessons/redact.py)).
+  Redaction is pattern-based and will miss things, so read lessons before you share them.
+- **Nothing is uploaded.** There is no telemetry and no server. Lessons are plain Markdown files: delete
+  `~/.lessons` and they are gone.
+
+## Evaluation
+
+Three rounds so far, on one person's data (the author's). Full reports and independent reviews are in `eval/`.
+
+**1. Does a lesson change behaviour in a new situation? Yes, modestly.** 47 new scenarios, each built around a
+verified lesson but set in a different project, with simulated tools (push, edit, paid runs, ask). The agent saw
+no notes, the matched notes, all verified notes, or the principles plus the one target lesson. Blind judges
+applied a pass/fail rule.
+
+| notes given to the agent | passes the person's rule | similar situations where the rule must *not* fire |
+|---|---|---|
+| none | 85% | 96% |
+| matched by `lessons search` | 89% | 100% |
+| all verified lessons (~9.4k tokens) | 98% | 100% |
+| principles + the relevant lesson | 100% | 96% |
+
+No scenario got worse with notes (none → relevant lesson: 7 better, 0 worse; sign test p = 0.016), and notes did
+not make the agent over-cautious on look-alike situations. Caveats: most scenarios already pass without notes, so
+the effect rests on a handful; criteria were written by agents that had read the lessons; simulated tools; one run
+per cell; agent and judge from one model family. Retrieval by keyword search did not reliably find the right
+lesson — at this size, injecting all verified lessons works as well as perfect retrieval.
+
+**2. Can lessons predict the person's next correction? No.** Replaying real held-out moments from transcripts,
+no memory design anticipated the person's pushback better than no memory, and memory made the model more
+suspicious (false alarms 12% → 27–47%). Most corrections bring new information that no past lesson contains.
+
+**What we take from it:** lessons help on the behaviours people correct repeatedly (asking before spending,
+not editing during a discussion, recomputing numbers); they don't make an agent read minds. We want to test this
+on many people's data — see the call for collaboration.
 
 ## Roadmap
 
-- Package on PyPI so `uvx learn-from-lessons scan` works directly.
-- More sources (Cursor, Aider, Gemini CLI) behind the same `Session` / `Turn` shape.
-- Verification by outcome: mark a lesson as holding when a later session meets its trigger without a correction.
-- Hooks that run `lessons search` automatically at session start for the current project.
-- Shareable, reviewed lesson packs for teams (opt-in, after redaction review).
+- [ ] Publish to PyPI so `uvx learn-from-lessons` works directly
+- [ ] `--level`, `--scenario`, `--strength`, `--verified-only` on `index`, `inject`, `search` and MCP
+- [ ] Run the held-out evaluation above and publish the protocol and aggregate results
+- [ ] Verification by outcome: a lesson holds when a later session meets its trigger without a correction
+- [ ] Session-start hooks that run `lessons search` for the current project automatically
+- [ ] More readers: Cursor, Aider, Gemini CLI, Cline
+- [ ] Opt-in, reviewed lesson packs that teams can share
 
-## Development
+## Call for collaboration
 
-```bash
-python3 -m unittest discover tests
-python3 -m lessons.cli scan
+This is an early research prototype, and it gets better with more people's histories and more agents.
+We are looking for:
+
+- **Tool builders: readers for more agents.** Cursor, Aider, Gemini CLI, Cline and others each store history in
+  their own format. A reader is one file that yields `Session`/`Turn` objects; see
+  [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-source-reader).
+- **Users: anonymised lesson statistics.** Counts only, no text: moments per kind, lessons per level and kind,
+  verified share, quote-match rate. These show whether the patterns hold beyond one person. Please never send
+  transcripts or lesson text.
+- **Researchers: co-authors for the evaluation.** We would like to design and run the held-out test with people
+  who study agent memory, human–AI interaction or learning from feedback.
+
+Get in touch through [GitHub Discussions](https://github.com/HumanStudy-Hub/learn-from-lessons/discussions)
+for ideas and collaboration, or [Issues](https://github.com/HumanStudy-Hub/learn-from-lessons/issues) for bugs
+and reader requests.
+
+## Citation
+
+If you use this tool or its lesson format, please cite the repository. The design is based on Anthropic's article,
+which should be cited as well.
+
+```bibtex
+@software{learn_from_lessons_2026,
+  author  = {{HumanStudy-Hub contributors}},
+  title   = {Learn from Lessons: Turning Coding-Agent Corrections into Verified, Evidence-Linked Lessons},
+  year    = {2026},
+  url     = {https://github.com/HumanStudy-Hub/learn-from-lessons},
+  version = {0.0.1},
+  license = {MIT}
+}
+
+@misc{anthropic_agent_memory_2026,
+  author       = {{Anthropic}},
+  title        = {The Components of Agent Memory},
+  year         = {2026},
+  howpublished = {\url{https://www.anthropic.com/research/components-of-agent-memory}}
+}
 ```
 
-MIT licensed. Contributions welcome.
+Machine-readable metadata: [CITATION.cff](CITATION.cff).
+
+## Acknowledgements
+
+- Anthropic's [The Components of Agent Memory](https://www.anthropic.com/research/components-of-agent-memory),
+  which gives the four layers, "lessons are predictions with evidence", and consolidation by dreaming.
+- The Claude Code, Codex and opencode teams, for keeping transcripts as readable local files.
+- The [Model Context Protocol](https://modelcontextprotocol.io), which lets one server work across clients.
+- Developed within [HumanStudy-Hub](https://github.com/HumanStudy-Hub).
+
+## License
+
+[MIT](LICENSE) © 2026 HumanStudy-Hub contributors

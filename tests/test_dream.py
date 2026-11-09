@@ -15,8 +15,8 @@ def moment(session, n, text, ts="2026-09-01T10:00:00Z", project="/p/proj"):
 
 def args(**kw):
     base = dict(shards=[], sources="", engine="fake", model="", home="", out="", add_candidates=[], max_batches=0,
-                batch_tokens=12000, budget_usd=0.0, threshold=0.3, timeout=10, no_consolidate=False,
-                consolidate_only=False, dry_run=False)
+                batch_tokens=12000, budget_usd=0.0, threshold=None, timeout=10, no_consolidate=False,
+                consolidate_only=False, dry_run=False, abstraction="medium", max_principles=10, scenarios="")
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -211,6 +211,290 @@ class TestIncremental(Base):
         self.write_shard([moment("s1", 5, "no")])
         r = dream.run(args(shards=[self.shard], out=self.out), engine=dream.FakeEngine(), log=lambda *x: None)
         self.assertEqual(r["home"], self.out + ".dream")
+
+
+def tool_moment(session, n, ts="2026-09-01T10:00:00Z"):
+    m = moment(session, n, "no, stop retrying", ts=ts)
+    m["kind"] = "repeated-error"
+    m["followup"] = [{"role": "user", "tool": "", "error": False, "ts": ts, "ref": f"/h/{session}.jsonl:{n + 3}",
+                      "text": "because the API key is reserved for batch work"}]
+    return m
+
+
+class TestV1Extract(Base):
+    def test_v1_fields_scenarios_and_strength_validated(self):
+        _, refs = dream.extract_prompt([moment("s1", 5, "no, don't force push to main")])
+        raw = [{"title": "Ask before pushing", "do": "Ask.", "level": "principle", "strength": "must",
+                "scenarios": ["release-deploy", "Coding", "made-up", "any"], "evidence": [{"ref": "r2"}]},
+               {"title": "Only bogus", "do": "x", "level": "instance", "scenarios": ["nope"], "strength": "huge",
+                "evidence": [{"ref": "r2"}]}]
+        out, stats = dream.validate(raw, refs)
+        self.assertEqual(out[0]["level"], "rule")  # principles only come from the abstraction pass
+        self.assertEqual(out[0]["scenarios"], ["release-deploy", "coding"])
+        self.assertEqual(out[0]["strength"], "must")
+        self.assertEqual(out[0]["parent"], "")
+        self.assertEqual(out[1]["level"], "instance")
+        self.assertEqual(out[1]["scenarios"], ["any"])
+        self.assertEqual(out[1]["strength"], "should")
+        self.assertEqual(sorted(stats["scenarios_unknown"]), ["made-up", "nope"])
+
+    def test_must_needs_the_persons_own_turn(self):
+        _, refs = dream.extract_prompt([moment("s1", 5, "no")])
+        out, stats = dream.validate([{"title": "T", "do": "D", "strength": "must", "evidence": [{"ref": "r1"}]}], refs)
+        self.assertEqual(out[0]["strength"], "should")  # r1 is the agent's tool call
+        self.assertEqual(stats["strength_downgraded"], 1)
+
+    def test_followup_rendered_and_citable(self):
+        prompt, refs = dream.extract_prompt([tool_moment("s1", 5)])
+        self.assertIn("(next turn): because the API key", prompt)
+        self.assertIn("`release-deploy`", prompt)
+        h = next(h for h, v in refs.items() if v["text"].startswith("because"))
+        out, _ = dream.validate([{"title": "T", "do": "D", "evidence": [{"ref": h}]}], refs)
+        self.assertEqual(out[0]["evidence"][0]["ref"], "/h/s1.jsonl:8")
+
+    def test_unknown_scenario_warned_in_run(self):
+        self.write_shard([moment("s1", 5, "no, don't force push")])
+        printed = []
+        dream.run(args(shards=[self.shard], out=self.out, home=self.home), engine=dream.FakeEngine(), log=printed.append)
+        self.assertTrue(any("unknown scenario" in p and "not-a-scenario" in p for p in printed))
+        l = dream.read_lessons(self.out)[0]
+        self.assertEqual((l["level"], l["scenarios"], l["strength"]), ("rule", ["coding"], "must"))
+
+    def test_scenarios_restrict_extraction(self):
+        self.write_shard([moment("s1", 5, "no, don't force push")])
+        eng = dream.FakeEngine()
+        r = dream.run(args(shards=[self.shard], out=self.out, home=self.home, scenarios="writing-paper"), engine=eng,
+                      log=lambda *x: None)
+        self.assertEqual(r["extract"]["dropped_scenario"], 1)
+        self.assertNotIn("`coding`", eng.prompts[0])
+        self.assertIn("`writing-paper`", eng.prompts[0])
+        self.assertFalse(os.path.isdir(self.out) and dream.read_lessons(self.out))
+        r = dream.run(args(shards=[self.shard], out=self.out + "2", home=self.home + "2", scenarios="coding"),
+                      engine=dream.FakeEngine(), log=lambda *x: None)
+        self.assertEqual(r["extract"]["kept"], 1)
+        with self.assertRaises(dream.EngineError):
+            dream.run(args(shards=[self.shard], out=self.out, home=self.home, scenarios="bogus"),
+                      engine=dream.FakeEngine(), log=lambda *x: None)
+
+    def test_round_trip_v1_and_v0_defaults(self):
+        l = lesson("Ask first", "s1", 1)
+        l.update(id="ask", level="instance", parent="p", scenarios=["coding", "release-deploy"], strength="prefer")
+        dream.write_lesson(self.out, l)
+        p = {"id": "p", "title": "Principle", "level": "principle", "parent": "", "scope": "global", "kind": "pitfall",
+             "scenarios": ["any"], "strength": "should", "trigger": "", "status": "verified", "themes": [],
+             "evidence": [], "seen": 3, "first_seen": "2026-09-01", "last_seen": "2026-09-03", "do": "d", "why": "w"}
+        dream.write_lesson(self.out, p)
+        with open(os.path.join(self.out, "global", "v0.md"), "w") as fh:
+            fh.write('---\nid: v0\ntitle: "Old"\nscope: "global"\nkind: pitfall\nstatus: candidate\nevidence:\n'
+                     '  - ref: "/h/x.jsonl:1"\n    quote: "q"\nseen: 1\n---\n\n**Do:** d\n')
+        back = {x["id"]: x for x in dream.read_lessons(self.out)}
+        self.assertEqual((back["ask"]["level"], back["ask"]["parent"], back["ask"]["strength"]), ("instance", "p", "prefer"))
+        self.assertEqual(back["ask"]["scenarios"], ["coding", "release-deploy"])
+        self.assertEqual((back["p"]["level"], back["p"]["seen"], back["p"]["status"], back["p"]["evidence"]),
+                         ("principle", 3, "verified", []))
+        self.assertEqual((back["v0"]["level"], back["v0"]["scenarios"], back["v0"]["strength"]), ("rule", ["any"], "should"))
+
+
+def rule(title, session, n, themes, status="candidate", sessions=None):
+    l = lesson(title, session, n, themes=themes)
+    for i, s2 in enumerate(sessions or []):
+        l["evidence"].append({"ref": f"/h/{s2}.jsonl:{n + i + 1}", "source": "claude-code", "date": "2026-09-02",
+                              "quote": "q", "session": s2})
+    l["trigger"] = title.lower()
+    return dream._finish(l)
+
+
+def scripted(abstract_answer):
+    def respond(prompt):
+        if prompt.startswith(dream.ABSTRACT_MARK):
+            return json.dumps(abstract_answer(prompt) if callable(abstract_answer) else abstract_answer)
+        return dream.FakeEngine()(prompt)
+    return respond
+
+
+class TestAbstraction(Base):
+    def setUp(self):
+        super().setUp()
+        os.makedirs(self.out)
+        self.push = rule("Never force push to main", "s1", 1, ("git",))
+        self.fig = rule("Render figures with embedded fonts", "s2", 2, ("figures",))
+        self.cost = rule("Ask before launching paid evaluation runs", "s3", 3, ("cost",))
+
+    def go(self, existing, cands, eng, **kw):
+        return dream.consolidate(existing, cands, eng, out_dir=self.out, run_id=kw.pop("run_id", "r1"),
+                                 log=lambda *x: None, **kw)
+
+    def by_level(self):
+        out = {}
+        for l in dream.read_lessons(self.out):
+            out.setdefault(l["level"], []).append(l)
+        return out
+
+    def test_principle_created_over_two_rules(self):
+        eng = dream.FakeEngine()
+        stats = self.go([], [self.push, self.fig], eng)
+        self.assertEqual(eng.calls, 1)  # no merge call (different topics), one abstraction call
+        lv = self.by_level()
+        self.assertEqual(len(lv["principle"]), 1)
+        p = lv["principle"][0]
+        self.assertEqual({r["parent"] for r in lv["rule"]}, {p["id"]})
+        self.assertEqual(p["evidence"], [])
+        self.assertEqual((p["seen"], p["status"]), (2, "candidate"))
+        self.assertEqual(stats["principles"], 1)
+        with open(os.path.join(self.out, "CHANGELOG.md")) as fh:
+            self.assertIn("- principle: Principle:", fh.read())
+
+    def test_principle_verified_iff_two_verified_children(self):
+        a = rule("Never force push to main", "s1", 1, ("git",), sessions=["s9"])
+        b = rule("Render figures with embedded fonts", "s2", 2, ("figures",), sessions=["s8"])
+        self.go([], [a, b, self.cost], dream.FakeEngine())
+        p = self.by_level()["principle"][0]
+        self.assertEqual(p["status"], "verified")
+        a2 = rule("Never force push to main", "s1", 1, ("git",), sessions=["s9"])
+        shutil.rmtree(self.out)
+        os.makedirs(self.out)
+        self.go([], [a2, self.fig, self.cost], dream.FakeEngine())
+        self.assertEqual(self.by_level()["principle"][0]["status"], "candidate")
+
+    def test_single_rule_never_gets_a_principle(self):
+        eng = dream.FakeEngine()
+        self.go([], [self.push], eng)
+        self.assertEqual(eng.calls, 0)
+        self.assertNotIn("principle", self.by_level())
+        # even when the model proposes one over a single rule
+        _, rl, pl = dream.abstract_prompt([self.push, self.fig], [], [self.push, self.fig], abstraction="medium",
+                                         max_new=10)
+        new, _, st = dream.apply_abstraction({"principles": [{"rules": ["R1"], "title": "P", "do": "d"}]}, rl, pl,
+                                             [self.push, self.fig], max_new=10, taken=set())
+        self.assertEqual((new, st["principles_rejected"]), ([], 1))
+        self.assertEqual(self.push.get("parent"), "")
+
+    def test_narrow_rules_become_instances_only_with_two_siblings(self):
+        broad = rule("Pull before editing a synced repo", "s1", 1, ("git",))
+        n1 = rule("Pull Overleaf before editing the paper", "s2", 2, ("git",))
+        n2 = rule("Pull the jobs branch before editing state", "s3", 3, ("git",))
+        for i, l in enumerate((broad, n1, n2)):
+            l["id"] = f"x{i}"
+        both = {"instances": [{"rule": "R2", "under": "R1"}, {"rule": "R3", "under": "R1"}]}
+        _, rl, pl = dream.abstract_prompt([broad, n1, n2], [], [broad, n1, n2], abstraction="medium", max_new=10)
+        _, log, st = dream.apply_abstraction(both, rl, pl, [broad, n1, n2], max_new=10, taken=set())
+        self.assertEqual(st["filed_as_instance"], 2)
+        self.assertEqual([(l["level"], l["parent"]) for l in (n1, n2)], [("instance", "x0"), ("instance", "x0")])
+        self.assertTrue(any("rule → instance" in x for x in log))
+        a, b = rule("Pull before editing a synced repo", "s1", 1, ("git",)), rule("Pull Overleaf first", "s2", 2, ("git",))
+        a["id"], b["id"] = "a", "b"
+        _, rl, pl = dream.abstract_prompt([a, b], [], [a, b], abstraction="medium", max_new=10)
+        _, _, st = dream.apply_abstraction({"instances": [{"rule": "R2", "under": "R1"}]}, rl, pl, [a, b],
+                                           max_new=10, taken=set())
+        self.assertEqual((st["filed_as_instance"], b["level"]), (0, "rule"))
+
+    def test_max_principles_caps_and_prefers_larger(self):
+        d = rule("Report numbers from the source table", "s4", 4, ("reporting",))
+        e = rule("Keep status replies short", "s5", 5, ("brevity",))
+        ans = {"principles": [{"rules": ["R1", "R2"], "title": "Small one", "do": "d"},
+                              {"rules": ["R3", "R4", "R5"], "title": "Big one", "do": "d"}]}
+        eng = dream.FakeEngine(scripted(ans))
+        stats = self.go([], [self.push, self.fig, self.cost, d, e], eng, max_principles=1)
+        ps = self.by_level()["principle"]
+        self.assertEqual([p["title"] for p in ps], ["Big one"])
+        self.assertEqual(stats["principles_rejected"], 1)
+
+    def test_incremental_attach_to_existing_and_dissolve_keeps_evidence(self):
+        self.go([], [self.push, self.fig], dream.FakeEngine())
+        before = dream.read_lessons(self.out)
+        pid = next(l["id"] for l in before if l["level"] == "principle")
+        seen_prompts = []
+
+        def attach(prompt):
+            seen_prompts.append(prompt)
+            return {"principles": [{"use": "P1", "rules": ["R1"]}]}
+        eng = dream.FakeEngine(scripted(attach))
+        self.go(before, [self.cost], eng, run_id="r2")
+        self.assertIn("### P1: Principle:", seen_prompts[0])
+        self.assertNotIn("Never force push", seen_prompts[0].split("Rules without a principle yet:")[1])
+        after = dream.read_lessons(self.out)
+        self.assertEqual(sum(l["level"] == "principle" for l in after), 1)
+        self.assertEqual(sum(l.get("parent") == pid for l in after), 3)
+        # nothing new: no abstraction call
+        eng3 = dream.FakeEngine()
+        self.go(after, [], eng3, run_id="r3")
+        self.assertEqual(eng3.calls, 0)
+        # two of three rules refuted -> the principle dissolves, its rules keep all evidence
+        lessons = dream.read_lessons(self.out)
+        for l in lessons:
+            if l["title"] in ("Never force push to main", "Render figures with embedded fonts"):
+                l["status"] = "refuted"
+        n_ev = sum(len(l["evidence"]) for l in lessons)
+        cand = rule("Write the abstract last", "s7", 7, ("writing",))
+        self.go(lessons, [cand], dream.FakeEngine(scripted({"principles": []})), run_id="r4")
+        final = dream.read_lessons(self.out)
+        self.assertFalse(any(l["level"] == "principle" for l in final))
+        self.assertFalse(any(l.get("parent") for l in final))
+        self.assertEqual(sum(len(l["evidence"]) for l in final), n_ev + 1)
+        with open(os.path.join(self.out, "CHANGELOG.md")) as fh:
+            self.assertIn("dissolved principle", fh.read())
+
+    def test_merge_relinks_children(self):
+        a, b = rule("Never force push to main", "s1", 1, ("git",)), rule("Never force push to main", "s2", 2, ("git",))
+        a["id"], b["id"] = "push-a", "push-b"
+        inst = rule("In the paper repo pull Overleaf first", "s3", 3, ("overleaf",))
+        inst.update(id="inst", level="instance", parent="push-b")
+        b["_new"] = True
+        self.go([a, inst], [b], dream.FakeEngine(scripted({"principles": []})))
+        back = {l["id"]: l for l in dream.read_lessons(self.out)}
+        self.assertEqual(back["inst"]["parent"], "push-a")
+
+
+class TestAbstractionParams(unittest.TestCase):
+    def rules(self, n=20):
+        topics = ["git push", "figure fonts", "paid runs", "status replies", "table numbers"]
+        return [rule(f"{topics[i % 5]} rule {i}", f"s{i}", i, (topics[i % 5].split()[0],)) for i in range(n)]
+
+    def test_higher_abstraction_fewer_bigger_groups(self):
+        rs = self.rules()
+        n = {lv: len(dream.abstraction_groups(rs, lv)) for lv in ("low", "medium", "high")}
+        self.assertGreater(n["low"], n["medium"])
+        self.assertGreaterEqual(n["medium"], n["high"])
+        self.assertEqual(n["high"], 1)
+        self.assertEqual(sum(len(g) for g in dream.abstraction_groups(rs, "low")), 20)
+
+    def test_guidance_and_merge_threshold_follow_level(self):
+        rs = self.rules(3)
+        lo = dream.abstract_prompt(rs, [], rs, abstraction="low", max_new=4)[0]
+        hi = dream.abstract_prompt(rs, [], rs, abstraction="high", max_new=4)[0]
+        self.assertIn("Abstraction: low", lo)
+        self.assertIn("Abstraction: high", hi)
+        self.assertIn("at most 4 new principle", hi)
+        self.assertLess(dream.ABSTRACTION["high"]["merge"], dream.ABSTRACTION["low"]["merge"])
+        # a pair that only high abstraction sends to the merge pass
+        a = rule("Never force push to main", "s1", 1, ("git", "push"))
+        b = rule("Never push without asking", "s2", 2, ("git", "remote"))
+        sim = dream.similarity(a, b)
+        self.assertTrue(dream.ABSTRACTION["high"]["merge"] <= sim < dream.ABSTRACTION["low"]["merge"], sim)
+
+    def test_cli_parses_new_flags(self):
+        a = dream.build_parser().parse_args(["--abstraction", "high", "--max-principles", "3", "--scenarios", "coding"])
+        self.assertEqual((a.abstraction, a.max_principles, a.scenarios, a.threshold), ("high", 3, "coding", None))
+
+
+class TestIncrementalHierarchy(Base):
+    def test_runs_build_tree_then_cost_nothing(self):
+        self.write_shard([moment("s1", 5, "no, don't force push to main")])
+        a = args(shards=[self.shard], out=self.out, home=self.home)
+        dream.run(a, engine=dream.FakeEngine(), log=lambda *x: None)
+        self.assertFalse(any(l["level"] == "principle" for l in dream.read_lessons(self.out)))
+        with open(self.shard, "a") as fh:
+            fh.write(json.dumps(moment("s2", 9, "stop, render the figures with embedded fonts",
+                                       ts="2026-09-03T00:00:00Z")) + "\n")
+        eng = dream.FakeEngine()
+        r = dream.run(a, engine=eng, log=lambda *x: None)
+        self.assertEqual(r["extract"]["moments_new"], 1)
+        self.assertEqual(r["consolidate"]["principles"], 1)
+        eng3 = dream.FakeEngine()
+        dream.run(a, engine=eng3, log=lambda *x: None)
+        self.assertEqual(eng3.calls, 0)
+        st = State(os.path.join(self.home, "state.json"))
+        self.assertEqual(st.data["runs"][-1]["abstraction"], "medium")
 
 
 if __name__ == "__main__":

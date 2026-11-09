@@ -10,7 +10,7 @@ from contextlib import redirect_stdout
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from lessons import cli, index, inject, mcp_server, store  # noqa: E402
+from lessons import cli, index, inject, mcp_server, scenario, store  # noqa: E402
 
 LESSON = """---
 id: {id}
@@ -166,7 +166,7 @@ class CliTest(Fixture):
         return rc, buf.getvalue()
 
     def test_search_json(self):
-        rc, out = self.run_cli("--dir", self.root, "search", "tests", "before", "done", "--json")
+        rc, out = self.run_cli("--dir", self.root, "search", "tests", "before", "done", "--json", "--all")
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(out)[0]["id"], "run-tests-first")
 
@@ -212,8 +212,243 @@ class McpSubprocessTest(Fixture):
         self.assertEqual(init["protocolVersion"], "2025-06-18")
         self.assertIn("tools", init["capabilities"])
         self.assertEqual(init["serverInfo"]["name"], "learn-from-lessons")
-        self.assertEqual({t["name"] for t in out[1]["result"]["tools"]}, {"search_lessons", "get_lesson"})
+        self.assertEqual({t["name"] for t in out[1]["result"]["tools"]},
+                         {"search_lessons", "get_lesson", "list_principles", "infer_scenario"})
         self.assertIn("verify-numbers", out[2]["result"]["content"][0]["text"])
+
+
+# ---------------------------------------------------------------- v1: levels, scenarios, strength
+
+V1 = """---
+id: {id}
+title: {title}
+level: {level}
+parent: {parent}
+scope: {scope}
+kind: workflow
+scenarios: [{scenarios}]
+strength: {strength}
+trigger: {trigger}
+status: {status}
+seen: {seen}
+themes: [{themes}]
+---
+
+**Do:** {body}
+"""
+
+
+def write_v1(root, scope_dir, **kw):
+    d = dict(id="x", title="T", level="rule", parent="", scope="global", scenarios="any", strength="should",
+             trigger="t", status="verified", seen=2, themes="x", body="b")
+    d.update(kw)
+    os.makedirs(os.path.join(root, scope_dir), exist_ok=True)
+    with open(os.path.join(root, scope_dir, d["id"] + ".md"), "w") as fh:
+        fh.write(V1.format(**d))
+
+
+class V1Fixture(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = os.path.join(self.tmp.name, "lessons")
+        self.proj = os.path.join(self.tmp.name, "paperproj")
+        os.makedirs(self.proj)
+        w = lambda **kw: write_v1(self.root, kw.pop("dir", "global"), **kw)  # noqa: E731
+        w(id="ask-first", level="principle", title="Ask before acting where the person holds the decision",
+          scenarios="any", strength="must", status="verified", themes="ask, decision", seen=0)
+        w(id="evidence-first", level="principle", title="Claims need shown evidence", scenarios="any",
+          status="verified", themes="evidence", seen=0)
+        w(id="no-push-without-go-ahead", parent="ask-first", title="Push or open a PR only after a go-ahead",
+          scenarios="coding, release-deploy", strength="must", trigger="about to git push", themes="git, push",
+          body="Wait for an explicit push.", seen=5)
+        w(id="ask-before-spending", parent="ask-first", title="State the cost of a paid run and wait",
+          scenarios="cost-resources, experiments", trigger="about to spend API credit", themes="cost, credit")
+        w(id="paper-numbers-from-tables", parent="evidence-first", title="Quote paper numbers from the table",
+          scenarios="writing-paper, reporting", trigger="writing results prose", themes="paper, numbers")
+        w(id="prefer-short-captions", parent="evidence-first", title="Prefer short captions",
+          scenarios="writing-paper", strength="prefer", status="candidate", themes="caption, paper")
+        w(id="overleaf-pull-first", level="instance", parent="no-push-without-go-ahead", dir="project-paper",
+          scope=f"project:{self.proj}", title="In the paper repo, pull from Overleaf before every edit",
+          scenarios="writing-paper, release-deploy", trigger="editing the paper repo", themes="overleaf, git, push")
+        w(id="lost-child", parent="does-not-exist", title="A rule whose parent is gone", themes="orphan")
+        # a v0 lesson (no level / scenarios / strength) must still work
+        write_lesson(self.root, "global", id="v0-verify", title="Verify numbers against the source table",
+                     trigger="reporting statistics", themes="numbers, push", body="Re-read the table.")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def ids(self, hits):
+        return [h["id"] for h in hits]
+
+
+class V1StoreTest(V1Fixture):
+    def test_v0_compat(self):
+        d = store.get("v0-verify", self.root)
+        self.assertEqual((d["level"], d["scenarios"], d["strength"], d["version"]), ("rule", ["any"], "should", 0))
+        self.assertEqual(store.get("ask-first", self.root)["version"], 1)
+        # a v0 rule (scenarios any) shows under every scenario
+        self.assertIn("v0-verify", self.ids(store.search("numbers", scenario="writing-paper", root=self.root)))
+
+    def test_hierarchy(self):
+        h = store.hierarchy(store.load(self.root))
+        self.assertEqual(h["principles"], ["ask-first", "evidence-first"])
+        self.assertEqual(h["children"]["ask-first"], ["ask-before-spending", "no-push-without-go-ahead"])
+        self.assertEqual(h["children"]["no-push-without-go-ahead"], ["overleaf-pull-first"])
+        self.assertEqual(h["orphans"], ["lost-child"])
+        self.assertIn("v0-verify", h["unparented"])
+        self.assertEqual(h["misleveled"], [])
+        chain = store.parent_chain(h["by_id"]["overleaf-pull-first"], h["by_id"])
+        self.assertEqual([p["id"] for p in chain], ["no-push-without-go-ahead", "ask-first"])
+
+    def test_scenario_filter(self):
+        paper = self.ids(store.search("git push branch", scenario="writing-paper", root=self.root))
+        self.assertNotIn("no-push-without-go-ahead", paper)   # a git-push rule is not a writing-paper lesson
+        dep = store.search("git push branch", scenario="release-deploy", root=self.root)
+        self.assertEqual(dep[0]["id"], "no-push-without-go-ahead")
+        self.assertEqual([p["id"] for p in dep[0]["chain"]], ["ask-first"])
+        # principles are always eligible, whatever the scenario
+        self.assertIn("ask-first", self.ids(store.search("ask decision", scenario="writing-paper", root=self.root)))
+
+    def test_level_cap_verified_strength(self):
+        q = "overleaf git push"
+        self.assertNotIn("overleaf-pull-first", self.ids(store.search(q, root=self.root)))  # default cap: rule
+        inst = store.search(q, level_max="instance", cwd=self.proj, root=self.root)
+        self.assertIn("overleaf-pull-first", self.ids(inst))
+        hit = next(h for h in inst if h["id"] == "overleaf-pull-first")
+        self.assertEqual([p["id"] for p in hit["chain"]], ["no-push-without-go-ahead", "ask-first"])
+        only_p = self.ids(store.search("", level_max="principle", root=self.root))
+        self.assertEqual(only_p, ["ask-first", "evidence-first"])
+        self.assertNotIn("prefer-short-captions", self.ids(store.search("caption", root=self.root)))  # candidate
+        self.assertIn("prefer-short-captions", self.ids(store.search("caption", root=self.root, verified_only=False)))
+        must = self.ids(store.search("", strength_min="must", root=self.root, k=50))
+        self.assertEqual(sorted(must), ["ask-first", "no-push-without-go-ahead"])
+
+
+class V1IndexTest(V1Fixture):
+    def test_paper_index(self):
+        out = index.build_index(root=self.root, scenario="writing-paper", cwd=self.tmp.name)
+        self.assertLess(out.index("## Principles"), out.index("## Rules"))
+        self.assertIn("Quote paper numbers from the table", out)
+        self.assertNotIn("Push or open a PR", out)        # coding/release-deploy rule
+        self.assertNotIn("State the cost", out)           # cost-resources rule
+        self.assertNotIn("Prefer short captions", out)    # candidate
+        self.assertNotIn("Overleaf", out)                 # instance: level cap
+        self.assertIn("~", out.splitlines()[-1])
+        self.assertTrue(out.splitlines()[-1].startswith("<!-- lessons index v1"))
+        self.assertEqual(out, index.build_index(root=self.root, scenario="writing-paper", cwd=self.tmp.name))
+
+    def test_instances_only_for_matching_project(self):
+        kw = dict(root=self.root, scenario="writing-paper", level="instance")
+        self.assertIn("pull from Overleaf", index.build_index(cwd=self.proj, **kw))
+        self.assertNotIn("pull from Overleaf", index.build_index(cwd=self.tmp.name, **kw))
+        p_only = index.build_index(root=self.root, level="principle")
+        self.assertNotIn("## Rules", p_only)
+        self.assertIn("Claims need shown evidence", p_only)
+
+    def test_budget(self):
+        for i in range(200):
+            write_v1(self.root, "global", id=f"r{i:03d}", parent="ask-first", title=f"Rule {i}",
+                     strength="must" if i == 199 else "should")
+        out = index.build_index(root=self.root, max_lines=40)
+        self.assertLessEqual(len(out.splitlines()), 40)
+        self.assertIn("Rule 199", out)   # must survives the cut
+        self.assertIn("omitted", out)
+
+
+class ScenarioTest(unittest.TestCase):
+    def best(self, text, cwd=None):
+        return scenario.best(text, cwd)
+
+    def test_english(self):
+        self.assertEqual(self.best("tighten the rebuttal paragraph in main.tex"), "writing-paper")
+        self.assertEqual(self.best("git push and open a PR"), "release-deploy")
+        self.assertEqual(self.best("pytest fails with a traceback"), "debugging")
+        self.assertEqual(self.best("redo the figure 2 plot colours"), "figures-visual")
+        self.assertEqual(self.best("how much API credit will this batch cost?"), "cost-resources")
+        self.assertEqual(self.best("why did we choose this, what is the plan"), "planning-discussion")
+
+    def test_chinese(self):
+        self.assertEqual(self.best("帮我改一下论文摘要"), "writing-paper")
+        self.assertEqual(self.best("部署到线上然后推送"), "release-deploy")
+        self.assertEqual(self.best("这个报错怎么调试"), "debugging")
+        self.assertEqual(self.best("这次跑要花多少钱"), "cost-resources")
+        self.assertEqual(self.best("我们讨论一下计划"), "planning-discussion")
+
+    def test_ranked_and_cwd(self):
+        r = scenario.infer_scenario("rerun the experiment seeds, what will the API cost be")
+        self.assertEqual(r[0][0], "cost-resources")
+        self.assertIn("experiments", [s for s, _ in r])
+        self.assertEqual(r, sorted(r, key=lambda x: -x[1]))
+        self.assertEqual(scenario.infer_scenario("hello there"), [])
+        self.assertEqual(self.best("", "/home/x/tech-report/paper"), "writing-paper")
+        self.assertTrue(all(s in scenario.SCENARIOS for s, _ in r))
+
+
+class V1CliTest(V1Fixture):
+    def run_cli(self, *args):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.main(list(args))
+        return rc, buf.getvalue()
+
+    def test_search_context_infers(self):
+        rc, out = self.run_cli("--dir", self.root, "search", "push", "--json",
+                               "--context", "now polish the abstract of the paper")
+        self.assertEqual(rc, 0)
+        data = json.loads(out)
+        self.assertEqual(data["scenario"], "writing-paper")
+        self.assertNotIn("no-push-without-go-ahead", [h["id"] for h in data["hits"]])
+        rc, out = self.run_cli("--dir", self.root, "search", "push", "--json", "--context", "git push to main")
+        self.assertEqual(json.loads(out)["hits"][0]["id"], "no-push-without-go-ahead")
+
+    def test_index_and_inject_flags(self):
+        rc, out = self.run_cli("--dir", self.root, "index", "--print", "--scenario", "writing-paper",
+                               "--level", "instance", "--cwd", self.proj, "--all")
+        self.assertIn("Prefer short captions", out)
+        self.assertIn("pull from Overleaf", out)
+        rc, out = self.run_cli("--dir", self.root, "index", "--print", "--strength", "must")
+        self.assertIn("Push or open a PR", out)
+        self.assertNotIn("Quote paper numbers", out)
+        t = os.path.join(self.proj, "CLAUDE.md")
+        rc, out = self.run_cli("--dir", self.root, "inject", "--target", t, "--scenario", "writing-paper")
+        self.assertIn("+" + inject.START, out)
+        self.assertNotIn("Push or open a PR", out)
+        self.assertFalse(os.path.exists(t))
+        self.run_cli("--dir", self.root, "inject", "--target", t, "--scenario", "writing-paper", "--apply")
+        rc, out = self.run_cli("--dir", self.root, "inject", "--target", t, "--scenario", "writing-paper")
+        self.assertIn("already up to date", out)
+
+    def test_tree_and_scenarios(self):
+        rc, out = self.run_cli("--dir", self.root, "tree")
+        self.assertEqual(rc, 0)
+        lines = out.splitlines()
+        i = lines.index("ask-first  [must; any]")
+        self.assertTrue(any(l.startswith("  - no-push-without-go-ahead") for l in lines[i:]))
+        self.assertTrue(any(l.startswith("    - overleaf-pull-first") for l in lines))
+        self.assertIn("orphans (parent id not found): 1", out)
+        rc, out = self.run_cli("--dir", self.root, "scenarios", "--json")
+        c = json.loads(out)
+        self.assertEqual(c["writing-paper"]["rule"], 2)
+        self.assertEqual(c["any"]["principle"], 2)
+
+    def test_mcp_v1_tools(self):
+        def call(name, **args):
+            r = mcp_server.handle({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                   "params": {"name": name, "arguments": args}}, self.root)
+            return r["result"]["content"][0]["text"]
+        t = call("search_lessons", query="git push", scenario="writing-paper")
+        self.assertNotIn("no-push-without-go-ahead", t)
+        t = call("search_lessons", query="git push overleaf", scenario="release-deploy", level="instance",
+                 cwd=self.proj)
+        self.assertIn("overleaf-pull-first", t)
+        self.assertIn("under: no-push-without-go-ahead < ask-first", t)
+        t = call("get_lesson", id="no-push-without-go-ahead")
+        self.assertIn("Parent chain", t)
+        self.assertIn("- ask-first [principle]", t)
+        self.assertIn("- overleaf-pull-first [instance", t)
+        self.assertIn("ask-first", call("list_principles"))
+        self.assertEqual(json.loads(call("infer_scenario", text="git push the release"))["best"], "release-deploy")
 
 
 if __name__ == "__main__":

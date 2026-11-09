@@ -1,17 +1,27 @@
 """dream: turn transcript moments into verified, evidence-linked lessons with the person's own agent CLI as the model.
 
+Lessons follow docs/LESSON_FORMAT.md (v1): each sits at a level (principle > rule > instance, linked by `parent`),
+lists `scenarios` from docs/SCENARIOS.md and a `strength` (must | should | prefer).
+
 Two passes, both incremental:
   extract      new moments (lessons.signals over every source, or exported shard files) are batched into prompts
-               (prompts/extract.md); the model answers with lessons as JSON; lessons citing references that are not
-               in the batch are dropped; dates and `seen` come from the cited turns, never from the model.
-  consolidate  candidates and existing lessons are clustered locally (title/trigger/theme overlap); each cluster
-               that holds something new is rewritten by the model (prompts/consolidate.md): merged, kept apart or
-               refuted. Evidence is only ever unioned, never deleted. Every change is appended to CHANGELOG.md.
+               (prompts/extract.md); the model answers with rules and instances as JSON; lessons citing references
+               that are not in the batch are dropped, unknown scenarios are dropped with a warning; dates and `seen`
+               come from the cited turns, never from the model.
+  consolidate  (a) rules/instances are clustered locally (title/trigger/theme overlap); each cluster that holds
+               something new is rewritten by the model (prompts/consolidate.md): merged, kept apart or refuted.
+               (b) abstraction: rules without a principle are grouped and the model proposes principles over >= 2
+               rules each, and files narrow rules as instances under a broader rule (prompts/abstract.md);
+               `--abstraction low|medium|high` sets how aggressively, `--max-principles` caps the count.
+               (c) seen/status are recomputed: a principle is verified iff >= 2 of its rules are, and dissolves
+               when fewer than 2 rules remain under it. (d) Evidence is only ever unioned, never deleted. Every
+               change, level and parent changes included, is appended to CHANGELOG.md.
 
 The model is whichever agent CLI is installed: `claude -p`, `codex exec` or `opencode run` (no API keys).
 `--engine fake` answers deterministically for tests; `--dry-run` prints the batches and prompts and calls nothing.
 
-    python3 -m lessons.dream --from 'work/shards/*.jsonl' --max-batches 1 --engine claude --out work/dream-smoke
+    python3 -m lessons.dream --from 'work/shards/*.jsonl' --max-batches 1 --engine claude --abstraction medium \
+        --out work/dream-smoke
 """
 from __future__ import annotations
 import argparse, glob, json, os, re, shutil, subprocess, sys, tempfile, time
@@ -28,11 +38,46 @@ except Exception:  # pragma: no cover - frontmatter.py is optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROMPTS = os.path.join(HERE, "prompts")
+SCENARIOS_DOC = os.path.join(os.path.dirname(HERE), "docs", "SCENARIOS.md")
 KINDS = ("preference", "workflow", "pitfall", "fact", "communication")
 TOOLS = ("claude-code", "codex", "opencode")
+LEVELS = ("principle", "rule", "instance")
+STRENGTHS = ("must", "should", "prefer")  # strongest first
 EXTRACT_MARK = "<!-- lessons:extract -->"
 CONSOLIDATE_MARK = "<!-- lessons:consolidate -->"
-PROMPT_MARKS = (EXTRACT_MARK, CONSOLIDATE_MARK)
+ABSTRACT_MARK = "<!-- lessons:abstract -->"
+PROMPT_MARKS = (EXTRACT_MARK, CONSOLIDATE_MARK, ABSTRACT_MARK)
+
+# How aggressively to generalise. merge: similarity needed to send two lessons to the dedupe pass (lower = more
+# merging); group: similarity used to split rules into abstraction calls; chunk: rules per abstraction call (a
+# bigger chunk lets one principle span more rules).
+ABSTRACTION = {
+    "low": {"merge": 0.40, "group": 0.20, "chunk": 8, "guidance": (
+        "Abstraction: low. Be conservative: write a principle only where its rules plainly state the same tenet in "
+        "different situations; keep principles close to their rules. When unsure, leave rules as they are.")},
+    "medium": {"merge": 0.30, "group": 0.10, "chunk": 16, "guidance": (
+        "Abstraction: medium. Write a principle where rules share a real tenet, even across different scenarios; "
+        "leave rules that share nothing.")},
+    "high": {"merge": 0.22, "group": 0.0, "chunk": 32, "guidance": (
+        "Abstraction: high. Generalise boldly: prefer fewer, broader principles that each cover many rules, as "
+        "long as each is still actionable. Attach rules to an existing principle whenever it fits.")},
+}
+_FALLBACK_SCENARIOS = ("any", "writing-paper", "writing-outward", "figures-visual", "coding", "debugging",
+                       "experiments", "research-ideation", "planning-discussion", "release-deploy", "reporting",
+                       "long-autonomous", "cost-resources")
+
+
+def load_scenarios(path: str = SCENARIOS_DOC) -> dict:
+    """id -> description, from the controlled vocabulary table in docs/SCENARIOS.md."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = re.findall(r"^\|\s*`([a-z0-9-]+)`\s*\|\s*(.*?)\s*\|\s*$", fh.read(), re.M)
+    except OSError:
+        rows = []
+    return dict(rows) if rows else {s: "" for s in _FALLBACK_SCENARIOS}
+
+
+SCENARIOS = load_scenarios()
 SYSTEM = ("You turn a person's coding-agent transcripts into short, evidence-linked lessons. Use only what the given "
           "text supports. Answer only with the JSON asked for.")
 
@@ -120,10 +165,12 @@ def render_batch(moments: list[dict]) -> tuple[str, dict]:
         head = (f"### Moment {i}: {m.get('kind', '?')} · {m.get('source', '?')} · project {m.get('project') or m.get('cwd') or '?'}"
                 f" · {(trig.get('ts') or '')[:10]}")
         lines = [head]
-        for t in list(m.get("context") or []) + [trig] + list(m.get("followup") or []):
+        after = list(m.get("followup") or [])
+        for t in list(m.get("context") or []) + [trig] + after:
             n += 1
             h = f"r{n}"
             is_trig = t is trig
+            is_after = any(t is a for a in after)
             role = t.get("role", "")
             limit = LIMITS["trigger"] if is_trig else LIMITS["error"] if t.get("error") else LIMITS.get(role, 300)
             text = _clip(t.get("text", ""), limit)
@@ -134,10 +181,13 @@ def render_batch(moments: list[dict]) -> tuple[str, dict]:
                 label += " ERROR"
             if is_trig:
                 label += " <- the moment"
+            elif is_after:
+                label += " (next turn)"
             lines.append(f"[{h}] {label}: {text if text else '(empty)'}")
             refs[h] = {"ref": t.get("ref", ""), "source": m.get("source", ""), "session": m.get("session", ""),
                        "date": (t.get("ts") or trig.get("ts") or "")[:10], "role": role,
-                       "text": redact(t.get("text") or ""), "project": m.get("project") or m.get("cwd") or ""}
+                       "text": redact(t.get("text") or ""), "project": m.get("project") or m.get("cwd") or "",
+                       "kind": m.get("kind", "")}
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks), refs
 
@@ -147,11 +197,11 @@ def _template(name: str) -> str:
         return fh.read()
 
 
-def make_batches(moments: list[dict], budget_tokens: int) -> list[list[dict]]:
+def make_batches(moments: list[dict], budget_tokens: int, scenarios=None) -> list[list[dict]]:
     """Greedy packing; moments of one session stay together so the model sees repeats side by side."""
     order = sorted(moments, key=lambda m: (m.get("project") or "", m.get("session") or "",
                                            (m.get("trigger") or {}).get("ts") or ""))
-    budget_tokens = max(1, budget_tokens - tokens_estimate(_template("extract.md")))
+    budget_tokens = max(1, budget_tokens - tokens_estimate(extract_prompt([], scenarios)[0]))
     batches, cur, used = [], [], 0
     for m in order:
         cost = tokens_estimate(render_batch([m])[0])
@@ -165,9 +215,18 @@ def make_batches(moments: list[dict], budget_tokens: int) -> list[list[dict]]:
     return batches
 
 
-def extract_prompt(batch: list[dict]) -> tuple[str, dict]:
+def scenario_list(allowed=None) -> str:
+    ids = [s for s in SCENARIOS if not allowed or s in allowed or s == "any"]
+    lines = [f"- `{s}`: {SCENARIOS[s]}" if SCENARIOS.get(s) else f"- `{s}`" for s in ids]
+    if allowed:
+        lines.append("\nThis run only learns lessons for the scenarios above: skip moments that teach nothing for them.")
+    return "\n".join(lines)
+
+
+def extract_prompt(batch: list[dict], scenarios=None) -> tuple[str, dict]:
     text, refs = render_batch(batch)
-    return _template("extract.md").replace("{{MOMENTS}}", text), refs
+    prompt = _template("extract.md").replace("{{SCENARIOS}}", scenario_list(scenarios))
+    return prompt.replace("{{MOMENTS}}", text), refs
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -218,6 +277,41 @@ def _themes(v) -> list[str]:
     return out[:6]
 
 
+def _scenarios(v, unknown: list | None = None) -> list[str]:
+    """Scenario ids from the vocabulary; unknown ones are dropped (and reported in `unknown`)."""
+    if isinstance(v, str):
+        v = re.split(r"[,;\s]+", v)
+    out = []
+    for x in v or []:
+        x = re.sub(r"[^a-z0-9-]+", "-", str(x).strip().strip("`").lower()).strip("-")
+        if not x:
+            continue
+        if x not in SCENARIOS:
+            if unknown is not None:
+                unknown.append(x)
+            continue
+        if x not in out:
+            out.append(x)
+    if "any" in out and len(out) > 1:
+        out.remove("any")
+    return out
+
+
+def _strength(v, default: str = "should") -> str:
+    v = str(v or "").strip().lower()
+    return v if v in STRENGTHS else default
+
+
+def _strongest(values) -> str:
+    vals = [v for v in values if v in STRENGTHS]
+    return min(vals, key=STRENGTHS.index) if vals else "should"
+
+
+def _level(v, default: str = "rule", allowed=LEVELS) -> str:
+    v = str(v or "").strip().lower()
+    return v if v in allowed else default
+
+
 def _scope(raw, evidence: list[dict]) -> str:
     raw = str(raw or "global").strip()
     if raw.startswith("tool:") and raw[5:] in TOOLS:
@@ -233,7 +327,18 @@ def _scope(raw, evidence: list[dict]) -> str:
 
 
 def _finish(lesson: dict) -> dict:
-    """Derive seen / first_seen / last_seen / status from the evidence."""
+    """Derive seen / first_seen / last_seen / status from the evidence. Principles have no evidence of their own:
+    theirs is recomputed from their rules (see recompute)."""
+    lesson.setdefault("level", "rule")
+    lesson.setdefault("parent", "")
+    lesson.setdefault("scenarios", ["any"])
+    lesson.setdefault("strength", "should")
+    if lesson["level"] == "principle":
+        lesson.setdefault("seen", 0)
+        lesson.setdefault("first_seen", "")
+        lesson.setdefault("last_seen", "")
+        lesson.setdefault("status", "candidate")
+        return lesson
     ev = lesson["evidence"]
     sessions = {e.get("session") or e.get("ref", "").rsplit(":", 1)[0] for e in ev}
     dates = sorted(e["date"] for e in ev if e.get("date"))
@@ -245,10 +350,14 @@ def _finish(lesson: dict) -> dict:
     return lesson
 
 
-def validate(raw, refs: dict) -> tuple[list[dict], dict]:
-    """Model lessons -> candidates. Evidence must cite a reference from this batch; a quote that is not in the cited
-    turn is replaced by that turn's own words. Lessons left without evidence are dropped."""
-    stats = {"lessons_in": 0, "kept": 0, "dropped_no_evidence": 0, "refs_invented": 0, "quotes_replaced": 0}
+def validate(raw, refs: dict, scenarios=None) -> tuple[list[dict], dict]:
+    """Model lessons -> v1 rule/instance candidates. Evidence must cite a reference from this batch; a quote that is
+    not in the cited turn is replaced by that turn's own words. Lessons left without evidence are dropped. Scenario
+    ids outside docs/SCENARIOS.md are dropped (listed in stats["scenarios_unknown"]); a lesson left with none gets
+    `any`. With `scenarios` (a restriction), lessons for none of them (and not `any`) are dropped. `must` needs a
+    cited turn of the person's own; otherwise it becomes `should`."""
+    stats = {"lessons_in": 0, "kept": 0, "dropped_no_evidence": 0, "refs_invented": 0, "quotes_replaced": 0,
+             "dropped_scenario": 0, "strength_downgraded": 0, "scenarios_unknown": []}
     by_full = {v["ref"]: h for h, v in refs.items() if v["ref"]}
     out = []
     if isinstance(raw, dict):
@@ -258,7 +367,7 @@ def validate(raw, refs: dict) -> tuple[list[dict], dict]:
             continue
         stats["lessons_in"] += 1
         title, do = _str(item.get("title"), 160), _str(item.get("do"))
-        evidence, used = [], set()
+        evidence, used, by_person = [], set(), False
         for e in item.get("evidence") or []:
             if not isinstance(e, dict):
                 continue
@@ -278,12 +387,24 @@ def validate(raw, refs: dict) -> tuple[list[dict], dict]:
             quote = re.sub(r"\s+", " ", quote).strip()[:200]
             evidence.append({"ref": info["ref"], "source": info["source"], "date": info["date"], "quote": quote,
                              "session": info["session"], "project": info["project"]})
+            by_person = by_person or info.get("role") == "user" and info.get("kind") != "repeated-error"
         if not evidence or not title or not do:
             stats["dropped_no_evidence"] += 1
             continue
+        unknown: list[str] = []
+        scen = _scenarios(item.get("scenarios"), unknown) or ["any"]
+        stats["scenarios_unknown"] += unknown
+        if scenarios and not (set(scen) & (set(scenarios) | {"any"})):
+            stats["dropped_scenario"] += 1
+            continue
+        strength = _strength(item.get("strength"))
+        if strength == "must" and not by_person:
+            strength = "should"
+            stats["strength_downgraded"] += 1
         kind = str(item.get("kind", "")).strip().lower()
-        lesson = {"title": title, "scope": _scope(item.get("scope"), evidence),
-                  "kind": kind if kind in KINDS else "pitfall", "trigger": _str(item.get("trigger")),
+        lesson = {"title": title, "level": _level(item.get("level"), "rule", ("rule", "instance")), "parent": "",
+                  "scope": _scope(item.get("scope"), evidence), "kind": kind if kind in KINDS else "pitfall",
+                  "scenarios": scen, "strength": strength, "trigger": _str(item.get("trigger")),
                   "status": "candidate", "themes": _themes(item.get("themes")), "evidence": evidence,
                   "do": do, "why": _str(item.get("why")), "check": _str(item.get("check"))}
         out.append(_finish(lesson))
@@ -307,10 +428,16 @@ def _q(v) -> str:
     return json.dumps(str(v if v is not None else ""), ensure_ascii=False)
 
 
+def _qlist(v) -> str:
+    return "[" + ", ".join(_q(t) for t in v or []) + "]"
+
+
 def dump_lesson(l: dict) -> str:
-    lines = ["---", f"id: {l['id']}", f"title: {_q(l['title'])}", f"scope: {_q(l['scope'])}", f"kind: {l['kind']}",
+    lines = ["---", f"id: {l['id']}", f"title: {_q(l['title'])}", f"level: {l.get('level') or 'rule'}",
+             f"parent: {_q(l.get('parent') or '')}", f"scope: {_q(l['scope'])}", f"kind: {l['kind']}",
+             f"scenarios: {_qlist(l.get('scenarios') or ['any'])}", f"strength: {l.get('strength') or 'should'}",
              f"trigger: {_q(l.get('trigger', ''))}", f"status: {l['status']}",
-             "themes: [" + ", ".join(_q(t) for t in l.get("themes") or []) + "]", "evidence:"]
+             f"themes: {_qlist(l.get('themes'))}", "evidence:" if l["evidence"] else "evidence: []"]
     for e in l["evidence"]:
         lines.append(f"  - ref: {_q(e.get('ref'))}")
         for k in ("source", "date", "session", "project", "quote"):
@@ -375,7 +502,10 @@ def read_lessons(root: str) -> list[dict]:
             continue
         sections = dict(re.findall(r"\*\*(Do|Why|Check):\*\*\s*(.*?)(?=\n\s*\*\*(?:Do|Why|Check):\*\*|\Z)", body, re.S))
         ev = [e for e in meta.get("evidence") or [] if isinstance(e, dict) and e.get("ref")]
-        l = {"id": str(meta.get("id") or slugify(meta["title"])), "title": str(meta["title"]),
+        level = _level(meta.get("level"))
+        l = {"id": str(meta.get("id") or slugify(meta["title"])), "title": str(meta["title"]), "level": level,
+             "parent": str(meta.get("parent") or "") if level != "principle" else "",
+             "scenarios": _scenarios(meta.get("scenarios")) or ["any"], "strength": _strength(meta.get("strength")),
              "scope": str(meta.get("scope") or "global"), "kind": str(meta.get("kind") or "pitfall"),
              "trigger": str(meta.get("trigger") or ""), "status": str(meta.get("status") or "candidate"),
              "themes": _themes(meta.get("themes")), "evidence": [{k: str(v) for k, v in e.items()} for e in ev],
@@ -383,6 +513,13 @@ def read_lessons(root: str) -> list[dict]:
              "check": sections.get("Check", "").strip(), "path": path}
         if meta.get("refuted_by"):
             l["refuted_by"] = meta["refuted_by"] if isinstance(meta["refuted_by"], list) else [meta["refuted_by"]]
+        if level == "principle":
+            for k in ("first_seen", "last_seen"):
+                l[k] = str(meta.get(k) or "")
+            try:
+                l["seen"] = int(meta.get("seen") or 0)
+            except (TypeError, ValueError):
+                l["seen"] = 0
         out.append(_finish(l))
     return out
 
@@ -446,8 +583,9 @@ def cluster(lessons: list[dict], threshold: float = 0.3, max_size: int = 8) -> l
 def consolidate_prompt(members: list[dict]) -> tuple[str, dict]:
     blocks, ehandles, n = [], {}, 0
     for i, l in enumerate(members, 1):
-        lines = [f"### L{i} ({'new candidate' if l.get('_new') else 'existing'}, status {l['status']}, "
-                 f"seen in {l['seen']} sessions, scope {l['scope']}, kind {l['kind']})",
+        lines = [f"### L{i} ({'new candidate' if l.get('_new') else 'existing'} {l.get('level', 'rule')}, "
+                 f"status {l['status']}, seen in {l['seen']} sessions, scope {l['scope']}, kind {l['kind']}, "
+                 f"strength {l.get('strength', 'should')}, scenarios {', '.join(l.get('scenarios') or ['any'])})",
                  f"title: {l['title']}", f"trigger: {l.get('trigger', '')}", f"do: {l.get('do', '')}",
                  f"why: {l.get('why', '')}"]
         if l.get("check"):
@@ -460,7 +598,8 @@ def consolidate_prompt(members: list[dict]) -> tuple[str, dict]:
             ehandles[f"e{n}"] = e
             lines.append(f"  [e{n}] {e.get('date', '')} {e.get('source', '')}: \"{_clip(e.get('quote', ''), 200)}\"")
         blocks.append("\n".join(lines))
-    return _template("consolidate.md").replace("{{LESSONS}}", "\n\n".join(blocks)), ehandles
+    prompt = _template("consolidate.md").replace("{{SCENARIOS}}", ", ".join(SCENARIOS))
+    return prompt.replace("{{LESSONS}}", "\n\n".join(blocks)), ehandles
 
 
 def _union_evidence(members: list[dict]) -> list[dict]:
@@ -491,7 +630,17 @@ def apply_merge(members: list[dict], answer, ehandles: dict) -> tuple[list[dict]
         base = next((g for g in group if not g.get("_new")), group[0])
         refuted = [ehandles[r]["ref"] for r in item.get("refuted_by") or [] if r in ehandles]
         kind = str(item.get("kind", base["kind"])).lower()
+        member_scen = []
+        for g in group:
+            member_scen += [x for x in g.get("scenarios") or [] if x not in member_scen]
+        scen = _scenarios(item.get("scenarios")) or _scenarios(member_scen) or ["any"]
+        default_level = "rule" if any(g.get("level", "rule") == "rule" for g in group) else "instance"
+        parents = Counter(g.get("parent") for g in group if g.get("parent"))
         merged = {"id": base.get("id", ""), "title": _str(item.get("title"), 160) or base["title"],
+                  "level": _level(item.get("level"), default_level, ("rule", "instance")),
+                  "parent": base.get("parent") or (parents.most_common(1)[0][0] if parents else ""),
+                  "scenarios": scen,
+                  "strength": _strength(item.get("strength"), _strongest(g.get("strength") for g in group)),
                   "scope": _scope(item.get("scope") or base["scope"], evidence) if item.get("scope") else base["scope"],
                   "kind": kind if kind in KINDS else base["kind"],
                   "trigger": _str(item.get("trigger")) or base.get("trigger", ""),
@@ -515,6 +664,224 @@ def apply_merge(members: list[dict], answer, ehandles: dict) -> tuple[list[dict]
         if k not in used:
             out.append(dict(l, _members=[l], _passthrough=True))
     return out, log
+
+
+# --------------------------------------------------------------------------------------------------------------
+# abstraction: principles over rules, instances under rules
+
+
+def _orphans(lessons: list[dict]) -> list[dict]:
+    """Rules without a principle and instances without a rule: what the abstraction pass may (re)home."""
+    return [l for l in lessons if l.get("level") in ("rule", "instance") and not l.get("parent")
+            and l.get("status") != "refuted"]
+
+
+def abstraction_groups(rules: list[dict], abstraction: str = "medium") -> list[list[dict]]:
+    """Split rules into abstraction calls. Related rules (by similarity) stay together; higher abstraction packs
+    more rules into one call, so a principle can span more of them."""
+    p = ABSTRACTION[abstraction]
+    if len(rules) <= p["chunk"]:
+        return [list(rules)] if rules else []
+    groups = cluster(rules, p["group"], max_size=p["chunk"]) if p["group"] > 0 else [list(rules)]
+    chunks, cur = [], []
+    for g in sorted(groups, key=len, reverse=True):
+        while len(g) > p["chunk"]:
+            chunks.append(g[:p["chunk"]])
+            g = g[p["chunk"]:]
+        if cur and len(cur) + len(g) > p["chunk"]:
+            chunks.append(cur)
+            cur = []
+        cur = cur + g
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def abstract_prompt(rules: list[dict], principles: list[dict], everything: list[dict], *, abstraction: str,
+                    max_new: int) -> tuple[str, dict, dict]:
+    """Returns (prompt, R-label -> rule, P-label -> principle)."""
+    rl, pl, blocks, pblocks = {}, {}, [], []
+    for i, l in enumerate(rules, 1):
+        rl[f"R{i}"] = l
+        blocks.append(f"### R{i} ({l.get('level', 'rule')}, strength {l.get('strength', 'should')}, scenarios "
+                      f"{', '.join(l.get('scenarios') or ['any'])}, scope {l['scope']}, seen {l['seen']}, "
+                      f"{l['status']})\ntitle: {l['title']}\ntrigger: {l.get('trigger', '')}\ndo: {l.get('do', '')}")
+    for i, p in enumerate(principles, 1):
+        pl[f"P{i}"] = p
+        kids = [k["title"] for k in everything if k.get("parent") == p.get("id") and k.get("level") == "rule"]
+        pblocks.append(f"### P{i}: {p['title']}\ndo: {p.get('do', '')}\nits rules: "
+                       + ("; ".join(kids[:5]) + (" …" if len(kids) > 5 else "") if kids else "(none listed)"))
+    prompt = (_template("abstract.md").replace("{{GUIDANCE}}", ABSTRACTION[abstraction]["guidance"])
+              .replace("{{MAX_NEW}}", str(max(0, max_new))).replace("{{SCENARIOS}}", ", ".join(SCENARIOS))
+              .replace("{{PRINCIPLES}}", "\n\n".join(pblocks) or "(none yet)")
+              .replace("{{RULES}}", "\n\n".join(blocks)))
+    return prompt, rl, pl
+
+
+def _labels(v) -> list[str]:
+    if isinstance(v, str):
+        v = re.findall(r"[RP]\d+", v)
+    return list(dict.fromkeys(str(x).strip().strip("[]") for x in v or []))
+
+
+def apply_abstraction(answer, rl: dict, pl: dict, everything: list[dict], *, max_new: int,
+                      taken: set) -> tuple[list[dict], list[str], dict]:
+    """Model answer -> (new principles, changelog lines, stats). Mutates rules in place (parent, level).
+    Enforced here, whatever the model said: a new principle needs >= 2 rules; a rule becomes an instance only under
+    a rule that ends up with >= 2 instances; no more than `max_new` new principles; nothing loses evidence."""
+    stats = {"principles_new": 0, "principles_rejected": 0, "attached": 0, "filed_as_instance": 0}
+    log: list[str] = []
+    if not isinstance(answer, dict):
+        return [], log, stats
+    # 1. instances under a broader rule
+    proposals: dict[str, list[dict]] = {}
+    for it in answer.get("instances") or []:
+        if not isinstance(it, dict):
+            continue
+        child, under = rl.get(str(it.get("rule", "")).strip()), rl.get(str(it.get("under", "")).strip())
+        if child is None or under is None or child is under or under.get("level") != "rule":
+            continue
+        proposals.setdefault(id(under), [under])
+        if all(child is not c for c in proposals[id(under)][1:]):
+            proposals[id(under)].append(child)
+    unders = {k for k in proposals}
+    for key, (under, *kids) in proposals.items():
+        kids = [k for k in kids if id(k) not in unders  # a rule with instances of its own stays a rule
+                and not any(x.get("parent") == k.get("id") for x in everything if k.get("id"))]
+        have = sum(1 for x in everything if x.get("level") == "instance" and x.get("parent") == under.get("id")
+                   and under.get("id"))
+        if have + len(kids) < 2:  # a lone narrow case stays a rule
+            kids = [k for k in kids if k.get("level") == "instance"]
+        for k in kids:
+            was = k.get("level", "rule")
+            k["level"], k["parent"], k["_dirty"] = "instance", under["id"], True
+            k["_placed"] = True
+            stats["filed_as_instance"] += 1
+            log.append(f"- level: {k['title']} — {was} → instance under \"{under['title']}\"")
+    # 2. principles
+    plans = []
+    for it in answer.get("principles") or []:
+        if not isinstance(it, dict):
+            continue
+        kids = [rl[x] for x in _labels(it.get("rules")) if x in rl]
+        kids = [k for k in kids if k.get("level") == "rule" and not k.get("_placed") and k.get("status") != "refuted"]
+        use = pl.get(str(it.get("use") or "").strip())
+        title = _str(it.get("title"), 160)
+        if use is None and title:  # a near-copy of an existing principle is that principle
+            wt = _words({"title": title})
+            use = next((p for p in pl.values() if wt and len(wt & _words({"title": p["title"]}))
+                        / len(wt | _words({"title": p["title"]})) >= 0.6), None)
+        plans.append((use, kids, it))
+    plans.sort(key=lambda x: (x[0] is None, -len(x[1])))
+    new: list[dict] = []
+    for use, kids, it in plans:
+        kids = [k for k in kids if not k.get("_placed")]
+        if use is not None:
+            for k in kids:
+                k["parent"], k["_dirty"], k["_placed"] = use["id"], True, True
+                stats["attached"] += 1
+                log.append(f"- parent: {k['title']} → principle \"{use['title']}\"")
+            continue
+        title, do = _str(it.get("title"), 160), _str(it.get("do"))
+        if len(kids) < 2 or not title or not do or len(new) >= max_new:
+            stats["principles_rejected"] += 1
+            continue
+        scopes = {k["scope"] for k in kids}
+        kinds = Counter(k["kind"] for k in kids)
+        kind = str(it.get("kind", "")).strip().lower()
+        union = []
+        for k in kids:
+            union += [x for x in k.get("scenarios") or [] if x not in union]
+        p = {"id": _unique_id(slugify(title), taken), "title": title, "level": "principle", "parent": "",
+             "scope": scopes.pop() if len(scopes) == 1 else "global",
+             "kind": kind if kind in KINDS else kinds.most_common(1)[0][0],
+             "scenarios": _scenarios(it.get("scenarios")) or (_scenarios(union) if len(union) <= 3 else ["any"]),
+             "strength": _strength(it.get("strength"), _strongest(k.get("strength") for k in kids)),
+             "trigger": _str(it.get("trigger")), "do": do, "why": _str(it.get("why")), "check": _str(it.get("check")),
+             "themes": _themes(it.get("themes")), "evidence": [], "status": "candidate", "seen": 0,
+             "first_seen": "", "last_seen": "", "_new": True, "_members": []}
+        for k in kids:
+            k["parent"], k["_dirty"], k["_placed"] = p["id"], True, True
+        note = _str(it.get("note"), 200)
+        log.append(f"- principle: {title} (over {len(kids)} rules: " + "; ".join(k["title"] for k in kids) + ")"
+                   + (f" — {note}" if note else ""))
+        new.append(p)
+        stats["principles_new"] += 1
+    return new, log, stats
+
+
+def recompute(lessons: list[dict], principles: list[dict]) -> tuple[list[dict], list[str]]:
+    """Fix links and derive principle status. Returns (dissolved principles, changelog lines).
+    A rule's parent must be a principle, an instance's a rule; a principle with < 2 live rules dissolves (it has no
+    evidence of its own, so nothing is lost); a principle is verified iff >= 2 of its rules are verified."""
+    log: list[str] = []
+    by_id = {l["id"]: l for l in lessons + principles if l.get("id")}
+    for l in lessons:
+        want = "principle" if l.get("level") == "rule" else "rule"
+        par = by_id.get(l.get("parent") or "")
+        if l.get("parent") and (par is None or par.get("level") != want or par is l):
+            l["parent"], l["_dirty"] = "", True
+    dissolved = []
+    for p in principles:
+        kids = [l for l in lessons if l.get("parent") == p["id"] and l.get("level") == "rule"
+                and l.get("status") != "refuted"]
+        if len(kids) < 2:
+            for l in lessons:
+                if l.get("parent") == p["id"]:
+                    l["parent"], l["_dirty"] = "", True
+            dissolved.append(p)
+            if not p.get("_new"):
+                log.append(f"- dissolved principle: {p['title']} (fewer than 2 rules left)")
+            continue
+        sessions = {e.get("session") or e.get("ref", "").rsplit(":", 1)[0] for k in kids for e in k["evidence"]}
+        dates = sorted(e["date"] for k in kids for e in k["evidence"] if e.get("date"))
+        before = (p.get("status"), p.get("seen"), p.get("first_seen"), p.get("last_seen"))
+        p["status"] = "verified" if sum(k["status"] == "verified" for k in kids) >= 2 else "candidate"
+        p["seen"], p["first_seen"], p["last_seen"] = len(sessions), dates[0] if dates else "", dates[-1] if dates else ""
+        if before != (p["status"], p["seen"], p["first_seen"], p["last_seen"]):
+            p["_dirty"] = True
+            if before[0] and before[0] != p["status"] and not p.get("_new"):
+                log.append(f"- status: principle {p['title']} {before[0]} → {p['status']}")
+    return dissolved, log
+
+
+def abstract(lessons: list[dict], principles: list[dict], engine: Engine | None, *, abstraction: str,
+             max_principles: int, taken: set, budget_usd: float = 0.0, log=print) -> tuple[list[dict], list[str], dict]:
+    """Run the abstraction pass over rules without a home, when any of them is new or changed this run."""
+    stats = {"abstraction_calls": 0, "principles_new": 0, "principles_rejected": 0, "attached": 0,
+             "filed_as_instance": 0, "errors": 0}
+    changes: list[str] = []
+    orphans = _orphans(lessons)
+    fresh = [l for l in orphans if l.get("_new") or not l.get("_passthrough") or l.get("_dirty")]
+    if not fresh or (len(orphans) < 2 and not principles):
+        return principles, changes, stats
+    for group in abstraction_groups(orphans, abstraction):
+        group = [l for l in group if not l.get("_placed")]
+        if len(group) < 2 and not principles:
+            continue
+        if budget_usd and engine.cost_usd >= budget_usd:
+            log(f"budget ${budget_usd:.2f} reached; skipping the rest of the abstraction pass")
+            break
+        max_new = max(0, max_principles - len(principles))
+        prompt, rl, pl = abstract_prompt(group, principles, lessons, abstraction=abstraction, max_new=max_new)
+        log(f"abstract {len(group)} rule(s) against {len(principles)} principle(s), ~{tokens_estimate(prompt)} tokens …")
+        try:
+            answer = parse_json(engine(prompt))
+        except EngineError as e:
+            stats["errors"] += 1
+            log(f"  engine error while abstracting: {e}")
+            continue
+        stats["abstraction_calls"] += 1
+        new, lines, s = apply_abstraction(answer, rl, pl, lessons, max_new=max_new, taken=taken)
+        for k in ("principles_new", "principles_rejected", "attached", "filed_as_instance"):
+            stats[k] += s[k]
+        log(f"  {s['principles_new']} new principle(s), {s['attached']} attached to existing, "
+            f"{s['filed_as_instance']} filed as instance(s)")
+        principles = principles + new
+        changes += lines
+    for l in lessons:
+        l.pop("_placed", None)
+    return principles, changes, stats
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -584,8 +951,10 @@ class CLIEngine(Engine):
 
 
 class FakeEngine(Engine):
-    """Deterministic stand-in. Extract: one lesson per moment, citing its trigger turn, titled from the person's words.
-    Consolidate: merge every member into one. Pass `respond(prompt) -> str` to script anything else."""
+    """Deterministic stand-in. Extract: one rule per moment, citing its trigger turn, titled from the person's words
+    (scenarios `coding` plus an unknown id, to exercise validation). Consolidate: merge every member into one.
+    Abstract: one principle over every listed rule (the code rejects it when that is a single rule).
+    Pass `respond(prompt) -> str` to script anything else."""
     name = "fake"
 
     def __init__(self, respond: Callable[[str], str] | None = None):
@@ -604,10 +973,18 @@ class FakeEngine(Engine):
                 if not m:
                     continue
                 words = " ".join(re.findall(r"[A-Za-z]+", m.group(2))[:6]) or "follow the person's correction"
-                out.append({"title": f"Avoid: {words}", "scope": "global", "kind": "pitfall",
+                out.append({"title": f"Avoid: {words}", "level": "rule", "scope": "global", "kind": "pitfall",
+                            "scenarios": ["coding", "not-a-scenario"], "strength": "must",
                             "trigger": "when " + words, "do": "Do what the person asked.", "why": m.group(2)[:100],
-                            "themes": ["fake"], "evidence": [{"ref": m.group(1), "quote": m.group(2)[:80]}]})
+                            "themes": [max(words.split(), key=len).lower()],
+                            "evidence": [{"ref": m.group(1), "quote": m.group(2)[:80]}]})
             return json.dumps(out)
+        if prompt.startswith(ABSTRACT_MARK):
+            rules = re.findall(r"^### (R\d+)", prompt, re.M)
+            first = re.search(r"^### R1 .*\ntitle: (.*)$", prompt, re.M)
+            return json.dumps({"principles": [{"rules": rules, "title": "Principle: " + (first.group(1) if first else "x"),
+                                               "do": "Ask before acting on the person's behalf.", "scenarios": ["any"],
+                                               "note": "fake principle"}], "instances": []})
         labels = re.findall(r"^### (L\d+)", prompt, re.M)
         title = re.search(r"^title: (.*)$", prompt, re.M)
         return json.dumps({"lessons": [{"merge": labels, "title": title.group(1) if title else "merged",
@@ -632,7 +1009,8 @@ def pick_engine(name: str, model: str = "", timeout: int = 900) -> Engine:
 
 
 def extract(moments: list[dict], engine: Engine | None, *, state: State | None, run_id: str, budget_tokens: int,
-            max_batches: int, budget_usd: float = 0.0, dry_run: bool = False, log=print) -> tuple[list[dict], dict]:
+            max_batches: int, budget_usd: float = 0.0, dry_run: bool = False, scenarios=None,
+            log=print) -> tuple[list[dict], dict]:
     fresh, keys_by_dupe = [], {}
     for m in moments:
         k = moment_key(m)
@@ -646,13 +1024,13 @@ def extract(moments: list[dict], engine: Engine | None, *, state: State | None, 
         keys_by_dupe[dupe] = [k]
         m["_keys"] = keys_by_dupe[dupe]
         fresh.append(m)
-    batches = make_batches(fresh, budget_tokens)
+    batches = make_batches(fresh, budget_tokens, scenarios)
     stats = {"moments_total": len(moments), "moments_new": len(fresh), "batches_total": len(batches),
              "batches_run": 0, "lessons_in": 0, "kept": 0, "refs_invented": 0, "dropped_no_evidence": 0,
-             "quotes_replaced": 0, "errors": 0}
+             "quotes_replaced": 0, "dropped_scenario": 0, "strength_downgraded": 0, "scenarios_unknown": 0, "errors": 0}
     candidates = []
     for bi, batch in enumerate(batches[:max_batches] if max_batches else batches, 1):
-        prompt, refs = extract_prompt(batch)
+        prompt, refs = extract_prompt(batch, scenarios)
         if dry_run:
             log(f"\n===== extract batch {bi}/{len(batches)}: {len(batch)} moments, ~{tokens_estimate(prompt)} tokens =====")
             log(prompt)
@@ -672,11 +1050,16 @@ def extract(moments: list[dict], engine: Engine | None, *, state: State | None, 
             stats["errors"] += 1
             log(f"  could not parse the model's answer: {answer[:300]!r}")
             continue
-        found, s = validate(parsed, refs)
-        for k in ("lessons_in", "kept", "refs_invented", "dropped_no_evidence", "quotes_replaced"):
+        found, s = validate(parsed, refs, scenarios)
+        for k in ("lessons_in", "kept", "refs_invented", "dropped_no_evidence", "quotes_replaced", "dropped_scenario",
+                  "strength_downgraded"):
             stats[k] += s[k]
+        stats["scenarios_unknown"] += len(s["scenarios_unknown"])
         stats["batches_run"] += 1
         log(f"  {s['kept']} lesson(s) kept of {s['lessons_in']}; {s['refs_invented']} invented ref(s) dropped")
+        if s["scenarios_unknown"]:
+            log(f"  warning: unknown scenario(s) dropped: {', '.join(sorted(set(s['scenarios_unknown'])))} "
+                f"(see docs/SCENARIOS.md)")
         for c in found:
             c["_new"] = True
         candidates += found
@@ -687,13 +1070,19 @@ def extract(moments: list[dict], engine: Engine | None, *, state: State | None, 
 
 
 def consolidate(existing: list[dict], candidates: list[dict], engine: Engine | None, *, out_dir: str, run_id: str,
-                budget_usd: float = 0.0, dry_run: bool = False, threshold: float = 0.3, log=print) -> dict:
+                budget_usd: float = 0.0, dry_run: bool = False, threshold: float | None = None,
+                abstraction: str = "medium", max_principles: int = 10, log=print) -> dict:
+    if threshold is None:
+        threshold = ABSTRACTION[abstraction]["merge"]
     for c in candidates:
         c["_new"] = True
+    principles = [l for l in existing if l.get("level") == "principle"]
+    existing = [l for l in existing if l.get("level") != "principle"]
     clusters = cluster(existing + candidates, threshold)
     stats = {"clusters": len(clusters), "model_calls": 0, "written": 0, "removed_files": 0, "errors": 0}
     changes: list[str] = []
     final: list[dict] = []
+    # (a) merge duplicate rules / instances
     for c in clusters:
         has_new = any(l.get("_new") for l in c)
         if not has_new:
@@ -701,8 +1090,8 @@ def consolidate(existing: list[dict], candidates: list[dict], engine: Engine | N
             continue
         if len(c) == 1:
             final.append(dict(c[0], _members=[c[0]], _passthrough=True))
-            changes.append(f"- added: {c[0]['title']} ({len(c[0]['evidence'])} evidence, seen {c[0]['seen']}, "
-                           f"{c[0]['status']})")
+            changes.append(f"- added: {c[0]['title']} ({c[0].get('level', 'rule')}, {len(c[0]['evidence'])} evidence, "
+                           f"seen {c[0]['seen']}, {c[0]['status']})")
             continue
         prompt, ehandles = consolidate_prompt(c)
         if dry_run:
@@ -723,33 +1112,58 @@ def consolidate(existing: list[dict], candidates: list[dict], engine: Engine | N
             merged = [dict(l, _members=[l], _passthrough=True) for l in c]
         for l in merged:
             if l.get("_new") and l.get("_passthrough"):
-                changes.append(f"- added: {l['title']} ({len(l['evidence'])} evidence, seen {l['seen']}, {l['status']})")
+                changes.append(f"- added: {l['title']} ({l.get('level', 'rule')}, {len(l['evidence'])} evidence, "
+                               f"seen {l['seen']}, {l['status']})")
+            elif not l.get("_passthrough"):
+                was = {m.get("level", "rule") for m in l["_members"] if not m.get("_new")}
+                if was and l.get("level") not in was:
+                    changes.append(f"- level: {l['title']} — {'/'.join(sorted(was))} → {l['level']}")
         final += merged
     if dry_run:
         return stats
-    # ids: existing ids stay (git-friendly rewrites in place), new lessons get unique slugs
-    taken = {l["id"] for l in final if l.get("id")}
+    # ids: existing ids stay (git-friendly rewrites in place), new lessons get unique slugs; links follow merges
+    taken = {l["id"] for l in final + principles if l.get("id")}
     for l in final:
         if not l.get("id"):
             l["id"] = _unique_id(slugify(l["title"]), taken)
-    keep_paths = set()
+    moved = {m["id"]: l["id"] for l in final for m in l["_members"] if m.get("id") and m["id"] != l["id"]}
     for l in final:
-        changed = l.get("_new") or not l.get("_passthrough") or not l.get("path")
+        if l.get("parent") in moved:
+            l["parent"], l["_dirty"] = moved[l["parent"]], True
+    # (b) abstraction: principles over rules, instances under rules
+    principles = [dict(p, _members=[p], _passthrough=True) for p in principles]
+    principles, lines, astats = abstract(final, principles, engine, abstraction=abstraction,
+                                         max_principles=max_principles, taken=taken, budget_usd=budget_usd, log=log)
+    changes += lines
+    stats["model_calls"] += astats["abstraction_calls"]
+    stats["errors"] += astats["errors"]
+    stats.update({k: v for k, v in astats.items() if k not in ("errors",)})
+    # (c) links and status
+    dissolved, lines = recompute(final, principles)
+    changes += lines
+    principles = [p for p in principles if all(p is not d for d in dissolved)]
+    everything = principles + final
+    keep_paths = set()
+    for l in everything:
+        changed = l.get("_new") or not l.get("_passthrough") or not l.get("path") or l.get("_dirty")
         path = os.path.join(out_dir, scope_dir(l["scope"]), f"{l['id']}.md")
         keep_paths.add(os.path.abspath(path))
         if changed or not os.path.exists(path):
             write_lesson(out_dir, l)
             stats["written"] += 1
-    # files of lessons that were merged into another one: their evidence now lives in the merged file
-    for l in final:
-        for m in l["_members"]:
+    # (d) files of lessons merged into another one (their evidence now lives in the merged file), and of dissolved
+    # principles (which carry no evidence)
+    for l in final + dissolved:
+        for m in l.get("_members") or []:
             p = m.get("path")
             if p and os.path.abspath(p) not in keep_paths and os.path.exists(p):
                 os.remove(p)
                 stats["removed_files"] += 1
-    stats["lessons"] = len(final)
-    stats["verified"] = sum(l["status"] == "verified" for l in final)
-    stats["refuted"] = sum(l["status"] == "refuted" for l in final)
+    stats["lessons"] = len(everything)
+    for lv in LEVELS:
+        stats[lv + "s"] = sum(l.get("level") == lv for l in everything)
+    stats["verified"] = sum(l["status"] == "verified" for l in everything)
+    stats["refuted"] = sum(l["status"] == "refuted" for l in everything)
     if changes:
         append_changelog(out_dir, run_id, changes, stats)
     return stats
@@ -760,8 +1174,10 @@ def append_changelog(out_dir: str, run_id: str, changes: list[str], stats: dict)
     os.makedirs(out_dir, exist_ok=True)
     head = "" if os.path.exists(path) else "# Lessons changelog\n\nWhat each dream changed. Newest last.\n"
     with open(path, "a", encoding="utf-8") as fh:
-        fh.write(f"{head}\n## {run_id}\n\n{len(changes)} change(s); {stats.get('lessons', 0)} lessons, "
-                 f"{stats.get('verified', 0)} verified, {stats.get('refuted', 0)} refuted.\n\n")
+        fh.write(f"{head}\n## {run_id}\n\n{len(changes)} change(s); {stats.get('lessons', 0)} lessons "
+                 f"({stats.get('principles', 0)} principles, {stats.get('rules', 0)} rules, "
+                 f"{stats.get('instances', 0)} instances), {stats.get('verified', 0)} verified, "
+                 f"{stats.get('refuted', 0)} refuted.\n\n")
         fh.write("\n".join(changes) + "\n")
 
 
@@ -790,7 +1206,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-batches", type=int, default=10, help="extract at most N batches this run (0 = all)")
     p.add_argument("--batch-tokens", type=int, default=12000, help="token budget per extract prompt (estimate)")
     p.add_argument("--budget-usd", type=float, default=0.0, help="advisory: stop calling the model once spent (claude reports cost)")
-    p.add_argument("--threshold", type=float, default=0.3, help="similarity needed to cluster two lessons")
+    p.add_argument("--threshold", type=float, default=None,
+                   help="similarity needed to send two lessons to the merge pass (default: set by --abstraction)")
+    p.add_argument("--abstraction", default="medium", choices=list(ABSTRACTION),
+                   help="how aggressively to generalise: high = fewer, broader principles and rules")
+    p.add_argument("--max-principles", type=int, default=10, help="cap on the number of principles")
+    p.add_argument("--scenarios", default="", help="comma-separated scenario ids (docs/SCENARIOS.md): only learn "
+                                                   "lessons for these")
     p.add_argument("--timeout", type=int, default=900, help="seconds per model call")
     p.add_argument("--no-consolidate", action="store_true", help="extract candidates only")
     p.add_argument("--consolidate-only", action="store_true", help="skip extraction")
@@ -808,6 +1230,12 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
         home = os.path.expanduser("~/.lessons")
     out_dir = out_dir or os.path.join(home, "lessons")
     run_id = time.strftime("%Y-%m-%d %H:%M:%S")
+    abstraction = getattr(args, "abstraction", "medium") or "medium"
+    max_principles = getattr(args, "max_principles", 10)
+    scenarios = [x.strip() for x in (getattr(args, "scenarios", "") or "").split(",") if x.strip()]
+    bad = [x for x in scenarios if x not in SCENARIOS]
+    if bad:
+        raise EngineError(f"unknown scenario(s) {', '.join(bad)}; known: {', '.join(SCENARIOS)}")
     state = None if args.dry_run else State(os.path.join(home, "state.json"))
     if engine is None and not args.dry_run:
         engine = pick_engine(args.engine, args.model, args.timeout)
@@ -822,7 +1250,8 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
             moments, prints = live_moments(state, [s for s in args.sources.split(",") if s])
         candidates, result["extract"] = extract(
             moments, engine, state=state, run_id=run_id, budget_tokens=args.batch_tokens,
-            max_batches=args.max_batches, budget_usd=args.budget_usd, dry_run=args.dry_run, log=log)
+            max_batches=args.max_batches, budget_usd=args.budget_usd, dry_run=args.dry_run,
+            scenarios=scenarios or None, log=log)
         if state:
             pending = {}
             for m in moments:  # a session is done when all its moments are
@@ -844,11 +1273,13 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
         existing = read_lessons(out_dir) if os.path.isdir(out_dir) else []
         result["consolidate"] = consolidate(existing, candidates, engine, out_dir=out_dir, run_id=run_id,
                                             budget_usd=args.budget_usd, dry_run=args.dry_run,
-                                            threshold=args.threshold, log=log)
+                                            threshold=args.threshold, abstraction=abstraction,
+                                            max_principles=max_principles, log=log)
     if engine is not None:
         result["model_calls"], result["cost_usd"] = engine.calls, round(engine.cost_usd, 4)
     if state:
-        state.add_run({"run": run_id, "engine": result["engine"], "extract": result.get("extract"),
+        state.add_run({"run": run_id, "engine": result["engine"], "abstraction": abstraction,
+                       "max_principles": max_principles, "scenarios": scenarios, "extract": result.get("extract"),
                        "consolidate": result.get("consolidate"), "cost_usd": result.get("cost_usd", 0)})
         state.save()
     return result

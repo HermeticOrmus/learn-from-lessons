@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 360" width="760" height="360" role="img" aria-labelledby="t d">
+  <title id="t">Learn from Lessons: four memory layers</title>
+  <desc id="d">Transcripts feed moments via scan, moments feed lessons via dream (extract, consolidate), lessons feed a small index via inject. Evidence links point from lessons back to transcripts, and each dream re-clusters existing lessons with new candidates.</desc>
+  <style>
+    .fg { fill: #1f2328; } .mu { fill: #656d76; } .ln { stroke: #8c959f; } .dot { fill: #1f2328; } .ac { fill: #bc4c00; } .acl { stroke: #bc4c00; }
+    text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .h { font-size: 15px; font-weight: 600; } .s { font-size: 12.5px; } .v { font-size: 11.5px; font-style: italic; }
+    @media (prefers-color-scheme: dark) {
+      .fg { fill: #e6edf3; } .mu { fill: #9198a1; } .ln { stroke: #6e7681; } .dot { fill: #e6edf3; } .ac { fill: #f0883e; } .acl { stroke: #f0883e; }
+    }
+  </style>
+
+  <!-- spine -->
+  <line class="ln" x1="60" y1="40" x2="60" y2="320" stroke-width="1"/>
+
+  <!-- layer 4 -->
+  <circle class="dot" cx="60" cy="40" r="5"/>
+  <text class="h fg" x="80" y="45">4 · Index</text>
+  <text class="s mu" x="240" y="45">block in CLAUDE.md / AGENTS.md · verified only · ≤ 200 lines · always loaded</text>
+
+  <text class="v mu" x="80" y="88">lessons index / inject</text>
+
+  <!-- layer 3 -->
+  <circle class="dot" cx="60" cy="130" r="5"/>
+  <text class="h fg" x="80" y="135">3 · Lessons</text>
+  <text class="s mu" x="240" y="135">principle → rule → instance · scenario · strength · evidence · searched on demand</text>
+
+  <text class="v mu" x="80" y="178">lessons dream: extract → consolidate (merge · rewrite · refute)</text>
+
+  <!-- layer 2 -->
+  <circle class="dot" cx="60" cy="220" r="5"/>
+  <text class="h fg" x="80" y="225">2 · Moments</text>
+  <text class="s mu" x="240" y="225">corrections · interrupts · frustration · repeated tool errors · no model</text>
+
+  <text class="v mu" x="80" y="268">lessons scan / mine</text>
+
+  <!-- layer 1 -->
+  <circle class="dot" cx="60" cy="315" r="5"/>
+  <text class="h fg" x="80" y="320">1 · Transcripts</text>
+  <text class="s mu" x="240" y="320">~/.claude/projects · ~/.codex/sessions · opencode SQLite · ground truth</text>
+
+  <!-- evidence link: lessons back to transcripts -->
+  <path class="acl" d="M 30 130 C 14 130, 14 315, 30 315" fill="none" stroke-width="1" stroke-dasharray="3 3"/>
+  <circle class="ac" cx="30" cy="315" r="2.5"/>
+  <text class="v ac" x="11" y="222" transform="rotate(-90 11 222)" text-anchor="middle">evidence refs</text>
+</svg>
