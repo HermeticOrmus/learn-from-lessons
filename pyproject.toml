@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "learn-from-lessons"
+dynamic = ["version"]
+description = "Turn your coding-agent transcripts (Claude Code, Codex, opencode) into verified, evidence-linked lessons."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "HumanStudy-Hub contributors" }]
+keywords = ["claude-code", "codex", "opencode", "agent-memory", "mcp", "lessons", "transcripts"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Environment :: Console",
+  "Topic :: Software Development",
+]
+dependencies = []
+
+[project.scripts]
+lessons = "lessons.cli:main"
+learn-from-lessons = "lessons.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/HumanStudy-Hub/learn-from-lessons"
+
+[tool.setuptools]
+packages = ["lessons", "lessons.sources"]
+
+[tool.setuptools.dynamic]
+version = { attr = "lessons.__version__" }
+
+[tool.setuptools.package-data]
+lessons = ["prompts/*.md", "templates/*"]

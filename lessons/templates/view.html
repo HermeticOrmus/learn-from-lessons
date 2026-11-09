@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lessons</title>
+<style>
+:root {
+  --bg: #fbfbfa; --fg: #1d1d1b; --muted: #6b6a66; --faint: #9a9893; --hair: #e3e2de; --sel: #f1f0ec;
+  --accent: #2f5d8a; --verified: #2e7d4f; --candidate: #a3741c; --refuted: #b3443a;
+  --k-correction: #2f5d8a; --k-frustration: #b3443a; --k-interrupt: #a3741c; --k-repeated-error: #6d5a9c;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --fg: #e8e6e1; --muted: #a09e98; --faint: #74726d; --hair: #2e2d2b; --sel: #222120;
+    --accent: #8db4dc; --verified: #7cc49a; --candidate: #d9b267; --refuted: #e58b81;
+    --k-correction: #8db4dc; --k-frustration: #e58b81; --k-interrupt: #d9b267; --k-repeated-error: #b3a3dd;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+code { font-family: var(--mono); font-size: .88em; background: var(--sel); padding: 0 .25em; border-radius: 3px; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 28px 24px 64px; }
+header h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: -.01em; }
+header .sub { color: var(--muted); font-size: 13px; margin: 0 0 18px; word-break: break-all; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 36px; padding: 14px 0; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
+.stat h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; margin: 0 0 4px; }
+.stat .row { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; }
+.stat button { all: unset; cursor: pointer; color: var(--muted); }
+.stat button:hover, .stat button.on { color: var(--fg); }
+.stat button b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; margin-right: 3px; }
+.dotc { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--faint); }
+.s-verified { background: var(--verified); } .s-candidate { background: var(--candidate); } .s-refuted { background: var(--refuted); }
+.moments { padding: 16px 0 6px; border-bottom: 1px solid var(--hair); }
+.moments h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; margin: 0 0 10px; }
+.moments .note { color: var(--muted); font-size: 12px; margin: 6px 0 10px; }
+svg.chart { max-width: 100%; height: auto; display: block; }
+svg text { fill: var(--muted); font-size: 12px; font-family: inherit; }
+svg text.num { fill: var(--fg); font-variant-numeric: tabular-nums; }
+svg text.tick { fill: var(--faint); font-size: 10.5px; }
+svg .hair { stroke: var(--hair); stroke-width: 1; }
+svg .bar { stroke-width: 3; stroke-linecap: round; stroke: var(--faint); }
+svg .k-correction { stroke: var(--k-correction); } svg .k-frustration { stroke: var(--k-frustration); }
+svg .k-interrupt { stroke: var(--k-interrupt); } svg .k-repeated-error { stroke: var(--k-repeated-error); }
+svg .dot { fill: var(--accent); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 16px 0 10px; }
+.filters input[type=search] { flex: 1 1 260px; min-width: 200px; font: inherit; color: var(--fg); background: transparent; border: 0; border-bottom: 1px solid var(--hair); padding: 6px 2px; outline: none; }
+.filters input[type=search]:focus { border-bottom-color: var(--accent); }
+.filters select { font: inherit; font-size: 13px; color: var(--fg); background: transparent; border: 0; border-bottom: 1px solid var(--hair); padding: 4px 2px; }
+.filters .count { color: var(--faint); font-size: 13px; margin-left: auto; font-variant-numeric: tabular-nums; }
+.filters .clear { all: unset; cursor: pointer; color: var(--accent); font-size: 13px; }
+main { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 0 40px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } #detail { position: static !important; max-height: none !important; border-top: 1px solid var(--hair); } }
+ul.list { list-style: none; margin: 0; padding: 0; }
+.card { padding: 12px 10px 12px 12px; border-bottom: 1px solid var(--hair); cursor: pointer; border-left: 2px solid transparent; }
+.card:hover { background: var(--sel); }
+.card.active { border-left-color: var(--accent); background: var(--sel); }
+.card .t { font-weight: 550; margin: 0 0 4px; }
+.meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; font-size: 12.5px; color: var(--muted); }
+.meta .chip { color: var(--fg); }
+.card .trig { color: var(--muted); font-size: 13px; margin: 4px 0 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card .foot { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.empty { color: var(--muted); padding: 24px 0; }
+#detail { position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto; padding: 14px 4px 40px 0; }
+#detail h2 { font-size: 19px; line-height: 1.35; font-weight: 600; margin: 0 0 8px; letter-spacing: -.01em; }
+#detail .lab { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; margin: 20px 0 6px; }
+#detail .trigger { margin: 0; }
+#detail .body p { margin: 0 0 10px; } #detail .body ul, #detail .body ol { margin: 0 0 10px; padding-left: 20px; }
+.ev { list-style: none; margin: 0; padding: 0; }
+.ev li { padding: 10px 0; border-top: 1px solid var(--hair); }
+.ev blockquote { margin: 4px 0 6px; padding-left: 12px; border-left: 2px solid var(--hair); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ref { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ref code { overflow-wrap: anywhere; color: var(--muted); background: none; padding: 0; }
+.ref button { all: unset; cursor: pointer; color: var(--accent); font-size: 12px; white-space: nowrap; }
+.path { font-size: 12px; color: var(--faint); margin-top: 24px; overflow-wrap: anywhere; }
+.warn { margin-top: 32px; color: var(--muted); font-size: 12px; }
+.warn summary { cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Lessons</h1>
+  <p class="sub" id="sub"></p>
+  <div class="stats" id="stats"></div>
+</header>
+<section class="moments" id="moments" hidden>
+  <h2>Moments per week</h2>
+  <p class="note" id="mnote"></p>
+  {{CHART}}
+</section>
+<div class="filters" id="filters">
+  <input type="search" id="q" placeholder="Search title, trigger, body, quotes…" aria-label="Search lessons">
+</div>
+<main>
+  <ul class="list" id="list"></ul>
+  <aside id="detail"><p class="empty">Select a lesson to see its evidence.</p></aside>
+</main>
+<details class="warn" id="warn" hidden><summary></summary><ul></ul></details>
+</div>
+<script type="application/json" id="data">{{DATA}}</script>
+<script>
+(function () {
+  "use strict";
+  var D = JSON.parse(document.getElementById("data").textContent);
+  var L = D.lessons;
+  var FACETS = [["status", "Status"], ["kind", "Kind"], ["scope", "Scope"], ["source", "Source"], ["theme", "Theme"]];
+  var state = { q: "", status: "", kind: "", scope: "", source: "", theme: "" };
+  var current = null;
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+  function value(l, f) {
+    return { status: [l.status], kind: [l.kind], scope: [l.scope_label], source: l.sources, theme: l.themes }[f];
+  }
+  function haystack(l) {
+    if (!l._h) {
+      var tmp = document.createElement("div"); tmp.innerHTML = l.body_html;
+      l._h = [l.id, l.title, l.trigger, l.scope, tmp.textContent, l.themes.join(" ")]
+        .concat(l.evidence.map(function (e) { return e.quote + " " + e.ref; })).join(" ").toLowerCase();
+    }
+    return l._h;
+  }
+  function matches(l) {
+    for (var i = 0; i < FACETS.length; i++) {
+      var f = FACETS[i][0];
+      if (state[f] && value(l, f).indexOf(state[f]) < 0) return false;
+    }
+    if (state.q) {
+      var h = haystack(l), words = state.q.toLowerCase().split(/\s+/);
+      for (var j = 0; j < words.length; j++) if (words[j] && h.indexOf(words[j]) < 0) return false;
+    }
+    return true;
+  }
+
+  // ---- header
+  var srcCount = {}; L.forEach(function (l) { l.evidence.forEach(function (e) { if (e.source) srcCount[e.source] = (srcCount[e.source] || 0) + 1; }); });
+  document.getElementById("sub").textContent = L.length + " lessons from " + D.lessons_dir + " · built " + D.built;
+  var stats = document.getElementById("stats");
+  var buttons = [];
+  FACETS.slice(0, 4).forEach(function (pair) {
+    var f = pair[0], s = el("div", "stat"); s.appendChild(el("h2", null, pair[1]));
+    var row = el("div", "row");
+    (D.facets[f] || []).forEach(function (kv) {
+      var b = el("button");
+      if (f === "status") b.appendChild(el("span", "dotc s-" + kv[0]));
+      b.appendChild(el("b", null, kv[1]));
+      b.appendChild(document.createTextNode(kv[0]));
+      b.title = f === "source" ? (kv[1] + " lessons, " + (srcCount[kv[0]] || 0) + " evidence entries") : "Filter by " + f;
+      b.addEventListener("click", function () { state[f] = state[f] === kv[0] ? "" : kv[0]; sync(); });
+      b._f = f; b._v = kv[0]; buttons.push(b); row.appendChild(b);
+    });
+    if (!row.childNodes.length) row.appendChild(el("span", null, "—"));
+    s.appendChild(row); stats.appendChild(s);
+  });
+  if (D.moments.total) {
+    document.getElementById("moments").hidden = false;
+    var bs = Object.keys(D.moments.by_source).map(function (k) { return D.moments.by_source[k] + " " + k; }).join(", ");
+    document.getElementById("mnote").textContent = D.moments.total + " moments (" + bs + "), " + D.moments.from + " – " + D.moments.to + ". Each column is one week.";
+  }
+
+  // ---- filters
+  var filters = document.getElementById("filters"), selects = {};
+  FACETS.forEach(function (pair) {
+    var f = pair[0], s = el("select"); s.setAttribute("aria-label", pair[1]);
+    s.appendChild(new Option("All " + pair[1].toLowerCase() + (f === "status" ? "es" : "s"), ""));
+    (D.facets[f] || []).forEach(function (kv) { s.appendChild(new Option(kv[0] + " (" + kv[1] + ")", kv[0])); });
+    if (!(D.facets[f] || []).length) s.disabled = true;
+    s.addEventListener("change", function () { state[f] = s.value; sync(); });
+    selects[f] = s; filters.appendChild(s);
+  });
+  var clear = el("button", "clear", "Clear"); clear.hidden = true;
+  clear.addEventListener("click", function () { Object.keys(state).forEach(function (k) { state[k] = ""; }); q.value = ""; sync(); });
+  filters.appendChild(clear);
+  var countEl = el("span", "count"); filters.appendChild(countEl);
+  var q = document.getElementById("q");
+  q.addEventListener("input", function () { state.q = q.value.trim(); render(); });
+
+  function sync() {
+    FACETS.forEach(function (p) { selects[p[0]].value = state[p[0]]; });
+    buttons.forEach(function (b) { b.classList.toggle("on", state[b._f] === b._v); });
+    render();
+  }
+
+  // ---- list
+  var list = document.getElementById("list");
+  function render() {
+    list.textContent = "";
+    var shown = L.filter(matches);
+    countEl.textContent = shown.length + " of " + L.length;
+    clear.hidden = !Object.keys(state).some(function (k) { return state[k]; });
+    if (!shown.length) { list.appendChild(el("li", "empty", L.length ? "No lessons match." : "No lessons yet.")); return; }
+    shown.forEach(function (l) {
+      var li = el("li", "card"); li.tabIndex = 0; li.dataset.id = l.id;
+      if (current === l.id) li.classList.add("active");
+      li.appendChild(el("p", "t", l.title));
+      var m = el("div", "meta");
+      var st = el("span", "chip"); st.appendChild(el("span", "dotc s-" + l.status)); st.appendChild(document.createTextNode(l.status));
+      m.appendChild(st); m.appendChild(el("span", "chip", l.kind)); m.appendChild(el("span", null, l.scope_label));
+      li.appendChild(m);
+      if (l.trigger) li.appendChild(el("div", "trig", l.trigger));
+      var foot = el("div", "foot");
+      foot.appendChild(el("span", null, "seen " + l.seen + (l.seen === 1 ? " session" : " sessions")));
+      if (l.last_seen) foot.appendChild(el("span", null, "last " + l.last_seen));
+      if (l.spark) { var sp = el("span"); sp.innerHTML = l.spark; foot.appendChild(sp); }
+      li.appendChild(foot);
+      li.addEventListener("click", function () { location.hash = encodeURIComponent(l.id); });
+      li.addEventListener("keydown", function (ev) { if (ev.key === "Enter") location.hash = encodeURIComponent(l.id); });
+      list.appendChild(li);
+    });
+  }
+
+  // ---- detail
+  var detail = document.getElementById("detail");
+  function copy(text, btn) {
+    function done() { btn.textContent = "copied"; setTimeout(function () { btn.textContent = "copy"; }, 1200); }
+    function fallback() {
+      var ta = el("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { btn.textContent = "select & copy"; }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback);
+    else fallback();
+  }
+  function show(id) {
+    var l = null;
+    for (var i = 0; i < L.length; i++) if (L[i].id === id) l = L[i];
+    current = l ? l.id : null;
+    Array.prototype.forEach.call(list.children, function (c) { c.classList.toggle("active", c.dataset && c.dataset.id === current); });
+    detail.textContent = "";
+    if (!l) { detail.appendChild(el("p", "empty", "Select a lesson to see its evidence.")); return; }
+    detail.appendChild(el("h2", null, l.title));
+    var m = el("div", "meta");
+    var st = el("span", "chip"); st.appendChild(el("span", "dotc s-" + l.status)); st.appendChild(document.createTextNode(l.status));
+    m.appendChild(st); m.appendChild(el("span", "chip", l.kind)); m.appendChild(el("span", null, l.scope));
+    m.appendChild(el("span", null, "seen " + l.seen + " · " + (l.first_seen || "?") + " → " + (l.last_seen || "?")));
+    if (l.themes.length) m.appendChild(el("span", null, "# " + l.themes.join(", ")));
+    detail.appendChild(m);
+    if (l.trigger) { detail.appendChild(el("div", "lab", "When")); detail.appendChild(el("p", "trigger", l.trigger)); }
+    if (l.body_html) { detail.appendChild(el("div", "lab", "Lesson")); var b = el("div", "body"); b.innerHTML = l.body_html; detail.appendChild(b); }
+    detail.appendChild(el("div", "lab", "Evidence · " + l.evidence.length));
+    if (l.spark) { var sp = el("div"); sp.innerHTML = l.spark; detail.appendChild(sp); }
+    var ul = el("ul", "ev");
+    l.evidence.forEach(function (e) {
+      var li = el("li"), mm = el("div", "meta");
+      mm.appendChild(el("span", "chip", e.date || "no date")); mm.appendChild(el("span", null, e.source || "unknown source"));
+      li.appendChild(mm);
+      if (e.quote) li.appendChild(el("blockquote", null, e.quote));
+      if (e.ref) {
+        var r = el("div", "ref"), c;
+        if (e.href) { c = el("a"); c.href = e.href; c.title = "Open the transcript file"; c.appendChild(el("code", null, e.ref)); }
+        else c = el("code", null, e.ref);
+        r.appendChild(c);
+        var btn = el("button", null, "copy"); btn.addEventListener("click", function () { copy(e.ref, btn); });
+        r.appendChild(btn); li.appendChild(r);
+      }
+      ul.appendChild(li);
+    });
+    detail.appendChild(ul);
+    var p = el("div", "path"); var a = el("a", null, l.path); a.href = "file://" + encodeURI(l.file); p.appendChild(a); detail.appendChild(p);
+  }
+  function route() { show(decodeURIComponent(location.hash.slice(1))); }
+  window.addEventListener("hashchange", route);
+
+  if (D.warnings.length) {
+    var w = document.getElementById("warn"); w.hidden = false;
+    w.querySelector("summary").textContent = D.warnings.length + " file warnings";
+    D.warnings.forEach(function (t) { w.querySelector("ul").appendChild(el("li", null, t)); });
+  }
+  sync(); route();
+})();
+</script>
+</body>
+</html>

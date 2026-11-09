@@ -1,0 +1,10 @@
+# Personal data: transcripts excerpts, extracted lessons and generated sites never go into the repo.
+work/
+library/
+.lessons/
+*.dream/
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
