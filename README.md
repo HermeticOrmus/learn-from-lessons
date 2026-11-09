@@ -20,7 +20,7 @@ Code, Codex, opencode), finds the moments you corrected the agent, and turns the
 exact quote they came from. Your agents load them next time.
 
 <p align="center">
-  <img src="docs/assets/demo.png" alt="Lessons grouped by principle, filtered by scenario" width="820">
+  <img src="docs/assets/demo.gif" alt="lessons scan, then browsing lessons by scenario and as a graph" width="820">
 </p>
 
 ## Install
