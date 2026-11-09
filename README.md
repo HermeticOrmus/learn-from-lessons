@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="Learn from Lessons" width="420">
+  <img src="docs/assets/logo.svg" alt="Learn from Lessons" width="460">
   <br>
   <b>Every time you correct your coding agent, it should learn. This makes it.</b>
   <br><br>
