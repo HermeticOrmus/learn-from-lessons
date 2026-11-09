@@ -3,7 +3,7 @@
 **A tool and agent skill that lets your coding agents learn from the corrections you already gave them.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](../LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 [![Works with](https://img.shields.io/badge/works%20with-Claude%20Code%20·%20Codex%20·%20opencode%20·%20MCP-555.svg)](#integrations)
 [![Status: prototype](https://img.shields.io/badge/status-prototype-orange.svg)](#roadmap)
 
@@ -15,7 +15,7 @@ cites the transcript turns it came from, says whether it has held up in more tha
 hierarchy (**principle → rule → instance**) that can be filtered by scenario. Agents read the lessons through a
 Claude Code skill, an `AGENTS.md` block, or an MCP server.
 
-No dependencies beyond the Python ≥ 3.10 standard library. Your transcripts and lessons stay on your machine.
+No dependencies beyond the Python ≥ 3.9 standard library. Your transcripts and lessons stay on your machine.
 
 > **Status: prototype (v0.0.1).** The pipeline runs end to end on the author's machine. The evaluation has not
 > been run yet ([Evaluation](#evaluation)), and flags and file formats may still change.

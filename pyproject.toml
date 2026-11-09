@@ -7,7 +7,7 @@ name = "learn-from-lessons"
 dynamic = ["version"]
 description = "Turn your coding-agent transcripts (Claude Code, Codex, opencode) into verified, evidence-linked lessons."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "learn-from-lessons contributors" }]
 keywords = ["claude-code", "codex", "opencode", "agent-memory", "mcp", "lessons", "transcripts"]

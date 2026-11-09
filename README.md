@@ -29,7 +29,7 @@ exact quote they came from. Your agents load them next time.
 pipx install git+https://github.com/assassin808/learn-from-lessons
 ```
 
-Python 3.10+, no other dependencies. Everything runs locally.
+Python 3.9+, no other dependencies. Everything runs locally.
 
 ## Usage
 

@@ -24,7 +24,7 @@ python3 -m lessons.cli scan            # runs from the checkout, no install need
 pip install -e .                       # optional: puts `lessons` on your PATH
 ```
 
-You need Python ≥ 3.10. The package has no runtime dependencies, and new ones need a strong reason.
+You need Python ≥ 3.9. The package has no runtime dependencies, and new ones need a strong reason.
 To try `dream` without spending model calls:
 
 ```bash
