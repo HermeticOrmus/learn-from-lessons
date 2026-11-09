@@ -18,7 +18,7 @@ redaction.
 ## Dev setup
 
 ```bash
-git clone https://github.com/HumanStudy-Hub/learn-from-lessons
+git clone https://github.com/assassin808/learn-from-lessons
 cd learn-from-lessons
 python3 -m lessons.cli scan            # runs from the checkout, no install needed
 pip install -e .                       # optional: puts `lessons` on your PATH
@@ -102,6 +102,6 @@ Readers we would especially like: Cursor, Aider, Gemini CLI, Cline.
 
 Keep PRs focused, describe what you ran (tests, `scan` on your own machine, counts only), and confirm that no
 personal data is included. Discuss larger ideas first in
-[GitHub Discussions](https://github.com/HumanStudy-Hub/learn-from-lessons/discussions).
+[GitHub Discussions](https://github.com/assassin808/learn-from-lessons/discussions).
 
 By contributing you agree that your contribution is licensed under the [MIT License](LICENSE).

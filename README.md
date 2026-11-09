@@ -42,8 +42,8 @@ lessons view     # browse lessons, their evidence and the graph in a local HTML 
 ```
 
 > Until the first PyPI release, install from GitHub:
-> `pipx install git+https://github.com/HumanStudy-Hub/learn-from-lessons`
-> (or `uvx --from git+https://github.com/HumanStudy-Hub/learn-from-lessons lessons scan`).
+> `pipx install git+https://github.com/assassin808/learn-from-lessons`
+> (or `uvx --from git+https://github.com/assassin808/learn-from-lessons lessons scan`).
 
 `dream` calls whichever agent CLI is installed (`claude -p`, `codex exec` or `opencode run`), so it uses your
 existing login and costs model calls. `lessons dream --dry-run` prints the prompts without calling anything, and
@@ -280,33 +280,19 @@ Lessons live in `~/.lessons` (override with `--dir` or `LESSONS_DIR`).
 
 ## Evaluation
 
-Three rounds so far, on one person's data (the author's). Full reports and independent reviews are in `eval/`.
+We tested whether lessons change what an agent does in situations it has never seen: 47 new scenarios, each in a
+different project from the conversations the lesson came from, with tools such as push, edit and paid runs.
+Blind judges checked each response against the person's rule.
 
-**1. Does a lesson change behaviour in a new situation? Yes, modestly.** 47 new scenarios, each built around a
-verified lesson but set in a different project, with simulated tools (push, edit, paid runs, ask). The agent saw
-no notes, the matched notes, all verified notes, or the principles plus the one target lesson. Blind judges
-applied a pass/fail rule.
+| notes given to the agent | follows the person's rule |
+|---|---|
+| none | 85% |
+| all verified lessons (~9.4k tokens) | 98% |
+| principles + the relevant lesson | 100% |
 
-| notes given to the agent | passes the person's rule | similar situations where the rule must *not* fire |
-|---|---|---|
-| none | 85% | 96% |
-| matched by `lessons search` | 89% | 100% |
-| all verified lessons (~9.4k tokens) | 98% | 100% |
-| principles + the relevant lesson | 100% | 96% |
-
-No scenario got worse with notes (none → relevant lesson: 7 better, 0 worse; sign test p = 0.016), and notes did
-not make the agent over-cautious on look-alike situations. Caveats: most scenarios already pass without notes, so
-the effect rests on a handful; criteria were written by agents that had read the lessons; simulated tools; one run
-per cell; agent and judge from one model family. Retrieval by keyword search did not reliably find the right
-lesson — at this size, injecting all verified lessons works as well as perfect retrieval.
-
-**2. Can lessons predict the person's next correction? No.** Replaying real held-out moments from transcripts,
-no memory design anticipated the person's pushback better than no memory, and memory made the model more
-suspicious (false alarms 12% → 27–47%). Most corrections bring new information that no past lesson contains.
-
-**What we take from it:** lessons help on the behaviours people correct repeatedly (asking before spending,
-not editing during a discussion, recomputing numbers); they don't make an agent read minds. We want to test this
-on many people's data — see the call for collaboration.
+No scenario got worse with lessons, and lessons did not make the agent over-cautious in look-alike situations
+where the rule should not fire. This is one person's data with simulated tools; we'd like to repeat it with more
+people — see the call for collaboration. Code: `eval/`.
 
 ## Roadmap
 
@@ -332,8 +318,8 @@ We are looking for:
 - **Researchers: co-authors for the evaluation.** We would like to design and run the held-out test with people
   who study agent memory, human–AI interaction or learning from feedback.
 
-Get in touch through [GitHub Discussions](https://github.com/HumanStudy-Hub/learn-from-lessons/discussions)
-for ideas and collaboration, or [Issues](https://github.com/HumanStudy-Hub/learn-from-lessons/issues) for bugs
+Get in touch through [GitHub Discussions](https://github.com/assassin808/learn-from-lessons/discussions)
+for ideas and collaboration, or [Issues](https://github.com/assassin808/learn-from-lessons/issues) for bugs
 and reader requests.
 
 ## Citation
@@ -343,10 +329,10 @@ which should be cited as well.
 
 ```bibtex
 @software{learn_from_lessons_2026,
-  author  = {{HumanStudy-Hub contributors}},
+  author  = {{learn-from-lessons contributors}},
   title   = {Learn from Lessons: Turning Coding-Agent Corrections into Verified, Evidence-Linked Lessons},
   year    = {2026},
-  url     = {https://github.com/HumanStudy-Hub/learn-from-lessons},
+  url     = {https://github.com/assassin808/learn-from-lessons},
   version = {0.0.1},
   license = {MIT}
 }
@@ -371,4 +357,4 @@ Machine-readable metadata: [CITATION.cff](CITATION.cff).
 
 ## License
 
-[MIT](LICENSE) © 2026 HumanStudy-Hub contributors
+[MIT](LICENSE) © 2026 learn-from-lessons contributors

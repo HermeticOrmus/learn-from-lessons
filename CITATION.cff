@@ -3,12 +3,12 @@ message: "If you use this software, please cite it as below."
 title: "Learn from Lessons: Turning Coding-Agent Corrections into Verified, Evidence-Linked Lessons"
 type: software
 authors:
-  - name: "HumanStudy-Hub contributors"
+  - name: "learn-from-lessons contributors"
 version: "0.0.1"
 date-released: "2026-11-08"
 license: MIT
-repository-code: "https://github.com/HumanStudy-Hub/learn-from-lessons"
-url: "https://github.com/HumanStudy-Hub/learn-from-lessons"
+repository-code: "https://github.com/assassin808/learn-from-lessons"
+url: "https://github.com/assassin808/learn-from-lessons"
 abstract: >-
   Learn from Lessons reads local coding-agent transcripts (Claude Code, Codex, opencode), finds the moments
   where the person corrected, stopped or redirected the agent, and consolidates them into verified,

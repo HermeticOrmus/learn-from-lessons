@@ -9,7 +9,7 @@ description = "Turn your coding-agent transcripts (Claude Code, Codex, opencode)
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "HumanStudy-Hub contributors" }]
+authors = [{ name = "learn-from-lessons contributors" }]
 keywords = ["claude-code", "codex", "opencode", "agent-memory", "mcp", "lessons", "transcripts"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -25,7 +25,7 @@ lessons = "lessons.cli:main"
 learn-from-lessons = "lessons.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/HumanStudy-Hub/learn-from-lessons"
+Homepage = "https://github.com/assassin808/learn-from-lessons"
 
 [tool.setuptools]
 packages = ["lessons", "lessons.sources"]
