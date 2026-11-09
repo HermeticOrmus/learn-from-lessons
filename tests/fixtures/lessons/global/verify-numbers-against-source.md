@@ -6,11 +6,11 @@ kind: pitfall
 trigger: Writing or editing a results paragraph, caption or abstract that cites statistics
 status: verified
 evidence:
-  - ref: /Users/assassin808/.claude/projects/-Users-assassin808-humanstudy/a1b2c3d4.jsonl:412
+  - ref: /Users/alice/.claude/projects/-Users-alice-humanstudy/a1b2c3d4.jsonl:412
     source: claude-code
     date: 2026-08-14
     quote: "不对，Table 2 里是 0.31 不是 0.42，你又编数字了"
-  - ref: /Users/assassin808/.claude/projects/-Users-assassin808-humanstudy/e5f6a7b8.jsonl:88
+  - ref: /Users/alice/.claude/projects/-Users-alice-humanstudy/e5f6a7b8.jsonl:88
     source: claude-code
     date: 2026-09-02
     quote: "where did 17 come from? the table says 16 studies"

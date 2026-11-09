@@ -6,7 +6,7 @@ kind: communication
 trigger: Reporting back after a long multi-step task
 status: candidate
 evidence:
-  - ref: /Users/assassin808/.codex/sessions/2026/10/rollout-2026-10-12.jsonl:301
+  - ref: /Users/alice/.codex/sessions/2026/10/rollout-2026-10-12.jsonl:301
     source: codex
     date: 2026-10-12
     quote: "too long, just tell me what changed"

@@ -6,7 +6,7 @@ kind: preference
 trigger: About to run a batch or test that would call the Anthropic API directly
 status: candidate
 evidence:
-  - ref: /Users/assassin808/.claude/projects/-Users-assassin808-humanstudy/c9d0e1f2.jsonl:1203
+  - ref: /Users/alice/.claude/projects/-Users-alice-humanstudy/c9d0e1f2.jsonl:1203
     source: claude-code
     date: 2026-11-06
     quote: "stop — don't use that key, it's reserved. ask me first"

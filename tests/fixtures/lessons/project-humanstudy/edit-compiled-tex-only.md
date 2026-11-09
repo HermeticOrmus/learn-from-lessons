@@ -1,16 +1,16 @@
 ---
 id: edit-compiled-tex-only
 title: Edit only the .tex files the main document actually inputs
-scope: project:/Users/assassin808/humanstudy/tech-report
+scope: project:/Users/alice/humanstudy/tech-report
 kind: workflow
 trigger: Asked to change wording in the paper while several near-identical drafts exist in parts/
 status: verified
 evidence:
-  - ref: /Users/assassin808/.claude/projects/-Users-assassin808-humanstudy/aa11bb22.jsonl:530
+  - ref: /Users/alice/.claude/projects/-Users-alice-humanstudy/aa11bb22.jsonl:530
     source: claude-code
     date: 2026-09-18
     quote: "you edited p3-draft.tex, that file isn't even compiled"
-  - ref: /Users/assassin808/.claude/projects/-Users-assassin808-humanstudy/cc33dd44.jsonl:77
+  - ref: /Users/alice/.claude/projects/-Users-alice-humanstudy/cc33dd44.jsonl:77
     source: claude-code
     date: 2026-10-03
     quote: "again?? check README for which parts are live"
