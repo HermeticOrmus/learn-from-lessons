@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="150" viewBox="0 0 880 150" role="img" aria-label="Your corrections become lessons your agents follow">
+  <style>
+    text{font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#1f2a24}
+    .t{font-size:17px;font-weight:600} .s{font-size:13px;fill:#5b6b61} .l{stroke:#9aa79f;stroke-width:1.5}
+    .d{fill:#1f2a24} .a{fill:#3d7a5f}
+    @media (prefers-color-scheme: dark){ text{fill:#e8ede9} .s{fill:#a9b6ae} .d{fill:#e8ede9} }
+  </style>
+  <defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#9aa79f"/></marker></defs>
+  <circle cx="60" cy="52" r="9" class="d"/>
+  <text x="60" y="92" text-anchor="middle" class="t">Your transcripts</text>
+  <text x="60" y="113" text-anchor="middle" class="s">Claude Code · Codex · opencode</text>
+  <line x1="150" y1="52" x2="270" y2="52" class="l" marker-end="url(#m)"/>
+  <circle cx="330" cy="52" r="9" class="d"/>
+  <text x="330" y="92" text-anchor="middle" class="t">Your corrections</text>
+  <text x="330" y="113" text-anchor="middle" class="s">"不是这样" · "don't push yet"</text>
+  <line x1="420" y1="52" x2="540" y2="52" class="l" marker-end="url(#m)"/>
+  <circle cx="600" cy="52" r="9" class="a"/>
+  <text x="600" y="92" text-anchor="middle" class="t">Lessons</text>
+  <text x="600" y="113" text-anchor="middle" class="s">principle → rule → case, with evidence</text>
+  <line x1="690" y1="52" x2="780" y2="52" class="l" marker-end="url(#m)"/>
+  <circle cx="820" cy="52" r="9" class="d"/>
+  <text x="820" y="92" text-anchor="middle" class="t">Your agents</text>
+  <text x="820" y="113" text-anchor="middle" class="s">follow them next time</text>
+</svg>

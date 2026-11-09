@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="96" viewBox="0 0 420 96" role="img" aria-label="Learn from Lessons">
+  <style>
+    .ink{fill:#1f2a24} .mark{stroke:#1f2a24} .accent{fill:#3d7a5f}
+    @media (prefers-color-scheme: dark){ .ink{fill:#e8ede9} .mark{stroke:#e8ede9} }
+  </style>
+  <g transform="translate(8,12)" fill="none" stroke-width="3" class="mark" stroke-linecap="round">
+    <circle cx="36" cy="36" r="30"/>
+    <path d="M22 38 l10 10 l20 -22"/>
+  </g>
+  <circle cx="72" cy="22" r="7" class="accent"/>
+  <text x="96" y="58" font-family="Georgia, 'Times New Roman', serif" font-size="38" class="ink">Learn from Lessons</text>
+</svg>
