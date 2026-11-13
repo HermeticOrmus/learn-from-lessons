@@ -75,12 +75,13 @@ def excluded_session(s: Session, patterns: list[str]) -> bool:
 
 
 def moment_texts(m: dict) -> list[str]:
-    """Everything of a moment record that a prompt or a lesson can carry."""
+    """The parts of a moment record a prompt renders: the project folder, each turn's text and tool name.
+    Labels the code sets (kind, source, session, ref) are left out, so `text:claude` does not drop everything."""
     turns = [m.get("trigger") or {}] + list(m.get("context") or []) + list(m.get("followup") or [])
-    out = [str(m.get(k) or "") for k in ("project", "cwd", "kind", "source", "session")]
+    out = [str(m.get(k) or "") for k in ("project", "cwd")]
     for t in turns:
         if isinstance(t, dict):
-            out += [str(t.get(k) or "") for k in ("text", "tool", "ref")]
+            out += [str(t.get(k) or "") for k in ("text", "tool")]
     return out
 
 
@@ -89,7 +90,7 @@ def lesson_texts(l: dict) -> list[str]:
     out += [str(x) for x in l.get("themes") or []]
     for e in l.get("evidence") or []:
         if isinstance(e, dict):
-            out += [str(v) for v in e.values()]
+            out += [str(e.get(k) or "") for k in ("quote", "project")]
     return out
 
 

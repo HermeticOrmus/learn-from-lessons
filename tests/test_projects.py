@@ -249,3 +249,54 @@ class StateKeepsSessionsWithDroppedMomentsOpenTest(unittest.TestCase):
                 os.environ["LESSONS_EXCLUDE_FILE"] = old_env or os.devnull
         self.assertIn("fake:a", prints)
         self.assertNotIn("fake:b", prints)  # re-read once the word is removed from the file
+
+
+class ReReviewTest(unittest.TestCase):
+    def test_dream_stops_before_any_model_call(self):
+        import json
+        from types import SimpleNamespace
+        from lessons.dream import EngineError
+        lesson = ("---\nid: x\ntitle: Acme first\nscope: global\nkind: preference\ntrigger: t\nstatus: candidate\n"
+                  "evidence:\n  - ref: /x/s.jsonl:3\n    source: claude-code\n    date: 2026-10-01\n"
+                  "    quote: \"no\"\n    project: /c/acme\n---\n**Do:** d\n")
+        moment = {"kind": "correction", "source": "claude-code", "project": "/own", "cwd": "/own", "session": "s",
+                  "trigger": {"role": "user", "text": "no, wait", "ref": "/x/s.jsonl:9", "ts": ""},
+                  "context": [{"role": "assistant", "text": "pushed", "ref": "/x/s.jsonl:8", "ts": ""}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            out, home = os.path.join(tmp, "lessons"), os.path.join(tmp, "h")
+            os.makedirs(os.path.join(out, "global"))
+            with open(os.path.join(out, "global", "x.md"), "w") as fh:
+                fh.write(lesson)
+            shard = os.path.join(tmp, "s.jsonl")
+            with open(shard, "w") as fh:
+                fh.write(json.dumps(moment) + "\n")
+            f = os.path.join(tmp, "ex")
+            with open(f, "w") as fh:
+                fh.write("/c/acme\n")
+            old = os.environ.get("LESSONS_EXCLUDE_FILE")
+            os.environ["LESSONS_EXCLUDE_FILE"] = f
+            eng = dream.FakeEngine()
+            try:
+                a = SimpleNamespace(shards=[shard], sources="", engine="fake", model="", home=home, out=out,
+                                    add_candidates=[], max_batches=0, batch_tokens=12000, budget_usd=0.0,
+                                    threshold=None, abstraction="medium", max_principles=10, scenarios="",
+                                    timeout=10, no_consolidate=False, consolidate_only=False, dry_run=False)
+                with self.assertRaises(EngineError):
+                    dream.run(a, engine=eng, log=lambda *x: None)
+            finally:
+                os.environ["LESSONS_EXCLUDE_FILE"] = old or os.devnull
+            self.assertEqual(eng.calls, 0)
+            self.assertFalse(os.path.exists(os.path.join(home, "candidates")))
+
+    def test_words_are_not_matched_on_labels_the_prompt_does_not_show(self):
+        m = {"kind": "repeated-error", "source": "claude-code", "session": "abc123", "cwd": "/own",
+             "trigger": {"text": "no", "ref": "/x/abc123.jsonl:3"}, "context": [], "followup": []}
+        for word in ("claude", "error", "abc123"):
+            self.assertEqual(len(dream.allowed_moments([m], [f"text:{word}"])), 1, word)
+
+    def test_lesson_labels_do_not_match_words(self):
+        l = {"id": "a", "title": "Ask first", "scope": "global",
+             "evidence": [{"ref": "/x/abc123.jsonl:3", "source": "claude-code", "session": "abc123",
+                           "date": "2026-10-01", "quote": "no, wait", "project": "/own"}]}
+        self.assertEqual(projects.matching_lessons([l], ["text:claude", "text:abc123", "text:2026"]), [])
+        self.assertEqual(len(projects.matching_lessons([l], ["text:wait"])), 1)

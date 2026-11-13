@@ -1250,6 +1250,13 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
     bad = [x for x in scenarios if x not in SCENARIOS]
     if bad:
         raise EngineError(f"unknown scenario(s) {', '.join(bad)}; known: {', '.join(SCENARIOS)}")
+    from . import projects
+    patterns = projects.load()
+    if not args.no_consolidate and os.path.isdir(out_dir):
+        hit = projects.matching_lessons(read_lessons(out_dir), patterns)
+        if hit:  # consolidate would send them; dropping them could dissolve a principle and delete its file
+            raise EngineError(f"{len(hit)} existing lesson(s) match {projects.default_file()}: "
+                              f"{', '.join(sorted(str(l.get('id')) for l in hit))}; move or delete them first")
     state = None if args.dry_run else State(os.path.join(home, "state.json"))
     if engine is None and not args.dry_run:
         engine = pick_engine(args.engine, args.model, args.timeout)
@@ -1277,10 +1284,11 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
                     state.set_session(sid, fp)
         if candidates:
             write_candidates(os.path.join(home, "candidates", run_id[:10]), candidates)
-    from . import projects
-    patterns = projects.load()
     for d in args.add_candidates:
-        extra = projects.allowed_lessons(read_lessons(os.path.expanduser(d)), patterns)
+        found = read_lessons(os.path.expanduser(d))
+        extra = projects.allowed_lessons(found, patterns)
+        if len(extra) < len(found):
+            log(f"skipped {len(found) - len(extra)} candidate(s) in {d} that match {projects.default_file()}")
         for l in extra:
             l.pop("path", None)  # never delete someone else's candidate files
             l["id"] = ""
@@ -1288,10 +1296,6 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
 
     if not args.no_consolidate and (candidates or args.dry_run):
         existing = read_lessons(out_dir) if os.path.isdir(out_dir) else []
-        hit = projects.matching_lessons(existing, patterns)
-        if hit:  # dropping them could dissolve a principle and delete its file, so stop before any model call
-            raise EngineError(f"{len(hit)} existing lesson(s) match {projects.default_file()}: "
-                              f"{', '.join(sorted(str(l.get('id')) for l in hit))}; move or delete them first")
         result["consolidate"] = consolidate(existing, candidates, engine, out_dir=out_dir, run_id=run_id,
                                             budget_usd=args.budget_usd, dry_run=args.dry_run,
                                             threshold=args.threshold, abstraction=abstraction,
