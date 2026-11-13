@@ -112,12 +112,15 @@ def _fingerprint(s) -> str:
 
 
 def live_moments(state: State | None, sources: Iterable[str]) -> tuple[list[dict], dict]:
+    from . import projects
     from .signals import find
     from .sources import SOURCES
     out, prints = [], {}
     seen: set = set()  # turns already found in a forked or resumed session
+    patterns = projects.load()
+    table = projects.sources({name: SOURCES[name] for name in sources}, patterns)
     for name in sources:
-        for s in SOURCES[name]():
+        for s in table[name]():
             if _is_scripted(s):
                 continue
             fp = _fingerprint(s)
@@ -125,8 +128,20 @@ def live_moments(state: State | None, sources: Iterable[str]) -> tuple[list[dict
             if state and state.session_unchanged(sid, fp):
                 continue
             prints[sid] = fp
-            out += [moment_dict(m) for m in find(s, seen)]
+            out += allowed_moments([moment_dict(m) for m in find(s, seen)], patterns)
     return out, prints
+
+
+def allowed_moments(moments: list[dict], patterns: list[str]) -> list[dict]:
+    """Shards may predate the exclude list: drop moments from excluded folders again."""
+    from .projects import excluded, mentions, words
+    terms = words(patterns)
+
+    def texts(m):
+        turns = [m.get("trigger") or {}] + list(m.get("context") or []) + list(m.get("followup") or [])
+        return (t.get("text", "") for t in turns if isinstance(t, dict))
+    return [m for m in moments
+            if not excluded(m.get("cwd") or m.get("project") or "", patterns) and not mentions(texts(m), terms)]
 
 
 def shard_moments(patterns: Iterable[str]) -> list[dict]:
@@ -1245,7 +1260,8 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
     if not args.consolidate_only:
         prints = {}
         if args.shards:
-            moments = shard_moments(args.shards)
+            from . import projects
+            moments = allowed_moments(shard_moments(args.shards), projects.load())
         else:
             moments, prints = live_moments(state, [s for s in args.sources.split(",") if s])
         candidates, result["extract"] = extract(

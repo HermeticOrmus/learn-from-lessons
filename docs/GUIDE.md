@@ -275,6 +275,22 @@ Lessons live in `~/.lessons` (override with `--dir` or `LESSONS_DIR`).
 - **Redaction.** API keys (`sk-…`), GitHub, Slack and AWS tokens, JWTs, private keys and `password=`-style values
   are replaced before an excerpt is exported or written into a lesson ([lessons/redact.py](../lessons/redact.py)).
   Redaction is pattern-based and will miss things, so read lessons before you share them.
+- **Excluded projects.** Sessions you must not send anywhere (client work, health or bank data) can be kept out of
+  `scan`, `mine` and `dream` with `~/.lessons/exclude-projects` (or `LESSONS_EXCLUDE_FILE`), one line each:
+
+  ```text
+  # a plain path: that folder and everything below it
+  ~/clients
+  # a glob on the whole folder path, without case
+  *medco*
+  # session:<word> skips every session that mentions the word in any turn, tool output included
+  session:patient
+  # text:<word> drops only the moments whose turns (the ones sent to the model) mention it
+  text:acme
+  ```
+
+  With any line set, a session whose folder is unknown is skipped too. `scan` prints how many sessions and
+  moments the file kept out.
 - **Nothing is uploaded.** There is no telemetry and no server. Lessons are plain Markdown files: delete
   `~/.lessons` and they are gone.
 

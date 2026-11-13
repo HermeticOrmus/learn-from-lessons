@@ -25,8 +25,9 @@ LIMITS = {"user": 1500, "assistant": 600, "tool": 1200}
 
 
 def _sources(only: list[str] | None = None):
+    from . import projects
     from .sources import SOURCES
-    return {k: v for k, v in SOURCES.items() if not only or k in only}
+    return projects.sources({k: v for k, v in SOURCES.items() if not only or k in only})
 
 
 def _project(cwd: str, cache: dict) -> str:
@@ -54,7 +55,9 @@ def _is_human(s) -> bool:
 # ---------------------------------------------------------------- scan
 
 def cmd_scan(a) -> int:
-    from . import signals
+    from . import projects, signals
+    terms = projects.words(projects.load())
+    dropped = 0
     rows, total = {}, Counter()
     for name, sessions in _sources(a.source).items():
         c, kinds = Counter(), Counter()
@@ -68,6 +71,9 @@ def cmd_scan(a) -> int:
                 if _is_human(s):
                     c["human sessions"] += 1
                     for m in signals.find(s):
+                        if projects.mentions((t.text for t in [*m.context, m.turn, *m.followup]), terms):
+                            dropped += 1
+                            continue
                         kinds[m.kind] += 1
         except Exception as e:  # one broken source should not hide the others
             print(f"  {name}: error reading ({type(e).__name__}: {e})", file=sys.stderr)
@@ -82,6 +88,10 @@ def cmd_scan(a) -> int:
         km = ", ".join(f"{k} {v}" for k, v in kinds.most_common()) or "-"
         print(f"{name:<12} {c['sessions']:>9} {c['subagent']:>9} {c['human sessions']:>7} {c['user turns']:>11}   {km}")
     mom = sum(v for k, v in total.items() if k.startswith("moments:"))
+    from .projects import SKIPPED, default_file
+    if SKIPPED or dropped:
+        print(f"\nskipped {sum(SKIPPED.values())} session(s) and {dropped} moment(s) from excluded projects "
+              f"({default_file()}).")
     print(f"\nhuman session = not a subagent and >= {HUMAN_MIN_TURNS} user turns. {mom} moments to learn from.")
     if mom:
         print("Next: `lessons dream` to turn them into lessons (or `lessons mine --out work/shards` to export).")
@@ -98,7 +108,9 @@ def _turn(t, limit: int | None = None) -> dict:
 
 def moments(only: list[str] | None = None):
     """Every moment from human sessions, as the JSON records the shards hold."""
-    from . import signals
+    from . import projects, signals
+    from .dream import allowed_moments
+    patterns = projects.load()
     cache: dict = {}
     seen: set = set()  # turns already found in another (forked or resumed) session
     for name, sessions in _sources(only).items():
@@ -106,9 +118,11 @@ def moments(only: list[str] | None = None):
             if not _is_human(s):
                 continue
             for m in signals.find(s, seen):
-                yield {"kind": m.kind, "source": s.source, "project": _project(s.cwd, cache), "cwd": s.cwd,
+                rec = {"kind": m.kind, "source": s.source, "project": _project(s.cwd, cache), "cwd": s.cwd,
                        "session": s.id, "trigger": _turn(m.turn, 2000), "context": [_turn(t) for t in m.context[:-1]],
                        "followup": [_turn(t, 1200) for t in m.followup]}
+                if allowed_moments([rec], patterns):
+                    yield rec
 
 
 def cmd_mine(a) -> int:
