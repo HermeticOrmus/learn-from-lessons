@@ -272,8 +272,11 @@ Lessons live in `~/.lessons` (override with `--dir` or `LESSONS_DIR`).
 - **Local by default.** `scan`, `mine`, `index`, `inject`, `search`, `view` and `mcp` make no network calls.
 - **`dream` is the one exception.** It sends redacted transcript excerpts to the agent CLI you already use, which is
   where those transcripts came from in the first place. `--dry-run` shows exactly what would be sent.
-- **Redaction.** API keys (`sk-…`), GitHub, Slack and AWS tokens, JWTs, private keys and `password=`-style values
-  are replaced before an excerpt is exported or written into a lesson ([lessons/redact.py](../lessons/redact.py)).
+- **Redaction.** API keys (`sk-…`, `xai-…`), GitHub, GitLab, Slack (tokens and webhooks), AWS, Supabase,
+  Stripe, Google, SendGrid, Hugging Face, Twilio, npm and Tailscale tokens, JWTs, private keys, `Bearer` and
+  `Basic` headers, passwords in URLs, `password=`-style and quoted JSON values, `NAME_KEY=` / `NAME_SECRET=` /
+  `NAME_TOKEN=` / `NAME_PASSWORD=` values (not variables, paths or numbers), and email addresses are replaced
+  before an excerpt is exported or written into a lesson ([lessons/redact.py](../lessons/redact.py)).
   Redaction is pattern-based and will miss things, so read lessons before you share them.
 - **Excluded projects.** Sessions you must not send anywhere (client work, health or bank data) can be kept out of
   `scan`, `mine` and `dream` with `~/.lessons/exclude-projects` (or `LESSONS_EXCLUDE_FILE`), one line each:
