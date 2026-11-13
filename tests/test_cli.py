@@ -12,6 +12,8 @@ sys.path.insert(0, ROOT)
 
 from lessons import cli, index, inject, mcp_server, scenario, store  # noqa: E402
 
+os.environ["LESSONS_EXCLUDE_FILE"] = os.devnull  # never the person's own list
+
 LESSON = """---
 id: {id}
 title: {title}

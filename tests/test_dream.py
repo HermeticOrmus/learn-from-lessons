@@ -2,6 +2,8 @@ import json, os, shutil, tempfile, unittest
 from types import SimpleNamespace
 
 from lessons import dream
+
+os.environ["LESSONS_EXCLUDE_FILE"] = os.devnull  # never the person's own list
 from lessons.state import State, moment_key
 
 

@@ -112,21 +112,35 @@ def _fingerprint(s) -> str:
 
 
 def live_moments(state: State | None, sources: Iterable[str]) -> tuple[list[dict], dict]:
+    from . import projects
     from .signals import find
     from .sources import SOURCES
     out, prints = [], {}
     seen: set = set()  # turns already found in a forked or resumed session
+    patterns = projects.load()
+    table = projects.sources({name: SOURCES[name] for name in sources}, patterns)
     for name in sources:
-        for s in SOURCES[name]():
+        for s in table[name]():
             if _is_scripted(s):
                 continue
             fp = _fingerprint(s)
             sid = f"{s.source}:{s.id}"
             if state and state.session_unchanged(sid, fp):
                 continue
-            prints[sid] = fp
-            out += [moment_dict(m) for m in find(s, seen)]
+            found = [moment_dict(m) for m in find(s, seen)]
+            kept = allowed_moments(found, patterns)
+            if len(kept) == len(found):  # a session with a dropped moment stays open for when the file changes
+                prints[sid] = fp
+            out += kept
     return out, prints
+
+
+def allowed_moments(moments: list[dict], patterns: list[str]) -> list[dict]:
+    """Shards may predate the exclude list: drop moments from excluded folders again."""
+    from .projects import excluded, mentions, moment_texts, words
+    terms = words(patterns)
+    return [m for m in moments if not excluded(m.get("cwd") or m.get("project") or "", patterns)
+            and not mentions(moment_texts(m), terms)]
 
 
 def shard_moments(patterns: Iterable[str]) -> list[dict]:
@@ -1236,6 +1250,13 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
     bad = [x for x in scenarios if x not in SCENARIOS]
     if bad:
         raise EngineError(f"unknown scenario(s) {', '.join(bad)}; known: {', '.join(SCENARIOS)}")
+    from . import projects
+    patterns = projects.load()
+    if not args.no_consolidate and os.path.isdir(out_dir):
+        hit = projects.matching_lessons(read_lessons(out_dir), patterns)
+        if hit:  # consolidate would send them; dropping them could dissolve a principle and delete its file
+            raise EngineError(f"{len(hit)} existing lesson(s) match {projects.default_file()}: "
+                              f"{', '.join(sorted(str(l.get('id')) for l in hit))}; move or delete them first")
     state = None if args.dry_run else State(os.path.join(home, "state.json"))
     if engine is None and not args.dry_run:
         engine = pick_engine(args.engine, args.model, args.timeout)
@@ -1245,7 +1266,8 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
     if not args.consolidate_only:
         prints = {}
         if args.shards:
-            moments = shard_moments(args.shards)
+            from . import projects
+            moments = allowed_moments(shard_moments(args.shards), projects.load())
         else:
             moments, prints = live_moments(state, [s for s in args.sources.split(",") if s])
         candidates, result["extract"] = extract(
@@ -1263,7 +1285,10 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
         if candidates:
             write_candidates(os.path.join(home, "candidates", run_id[:10]), candidates)
     for d in args.add_candidates:
-        extra = read_lessons(os.path.expanduser(d))
+        found = read_lessons(os.path.expanduser(d))
+        extra = projects.allowed_lessons(found, patterns)
+        if len(extra) < len(found):
+            log(f"skipped {len(found) - len(extra)} candidate(s) in {d} that match {projects.default_file()}")
         for l in extra:
             l.pop("path", None)  # never delete someone else's candidate files
             l["id"] = ""
