@@ -113,6 +113,20 @@ class ReviewFindingsTest(unittest.TestCase):
             redact(text)
             self.assertLess(time.perf_counter() - t, 0.15, text[:6])
 
+    def test_blank_runs_stay_fast(self):
+        import time
+        for text in ("\n" * 40000, "  \n" * 13333):
+            t = time.perf_counter()
+            redact(text)
+            self.assertLess(time.perf_counter() - t, 0.15)
+
+    def test_quoted_env_values_with_a_prefixed_name(self):
+        cases = {'OPENAI_API_KEY="abcdefghijkl"': 'OPENAI_API_KEY="[redacted]"',
+                 "DB_PASSWORD='hunter2hunter'": "DB_PASSWORD='[redacted]'",
+                 'export STRIPE_SECRET="' + X + '"': 'export STRIPE_SECRET="[redacted]"'}
+        for text, want in cases.items():
+            self.assertEqual(redact(text), want)
+
     def test_sk_inside_a_word_stays(self):
         for text in ("a risk-assessment-review-board note", "the disk-usage-report-generator"):
             self.assertEqual(redact(text), text)

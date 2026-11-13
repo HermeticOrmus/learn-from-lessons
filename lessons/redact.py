@@ -26,13 +26,13 @@ PATTERNS = [
     (re.compile(r"(?i)\b(Bearer\s+)(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{20,}"), r"\1[redacted]"),
     (re.compile(r"(?i)([\"'])([A-Za-z0-9_-]*(?:api[_-]?key|secret|token|password|passwd))\1(\s*:\s*)([\"'])[^\"'\n]{6,}\4"),
      r"\1\2\1\3\4[redacted]\4"),
-    (re.compile(r"(?i)\b(password|passwd|secret|token|api[_-]?key)\b(\s*[:=]\s*)([\"'])[^\"'\n]{6,}\3"),
+    (re.compile(r"(?i)\b([A-Za-z0-9_]*(?:password|passwd|secret|token|api[_-]?key))(\s*[:=]\s*)([\"'])[^\"'\n]{6,}\3"),
      r"\1\2\3[redacted]\3"),
     (re.compile(r"(?i)\b(password|passwd|secret|token|api[_-]?key)\b(\s*[:=]\s*)(?![\"'\[$/(])(\S{6,})"), r"\1\2[redacted]"),
     # NAME_KEY=value; skip what is code, a path, a variable or a number, not a secret
     (re.compile(r"\b([A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD))(\s*=\s*)(?![/$\[(\"'])(?!\d+\b)[^\s\"']{6,}"),
      r"\1\2[redacted]"),
-    (re.compile(r"(?m)^(\s*(?:-\s*)?[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD):[ \t]+)(?=[^\s\[\]();=,]*\d)"
+    (re.compile(r"(?m)^([ \t]*(?:-[ \t]*)?[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD):[ \t]+)(?=[^\s\[\]();=,]*\d)"
                 r"[^\s\[\]();=,]{6,}$"), r"\1[redacted]"),
     (re.compile(r"(?<![\w.+-])(?!git@)[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"), "[email]"),
 ]
