@@ -272,10 +272,11 @@ Lessons live in `~/.lessons` (override with `--dir` or `LESSONS_DIR`).
 - **Local by default.** `scan`, `mine`, `index`, `inject`, `search`, `view` and `mcp` make no network calls.
 - **`dream` is the one exception.** It sends redacted transcript excerpts to the agent CLI you already use, which is
   where those transcripts came from in the first place. `--dry-run` shows exactly what would be sent.
-- **Redaction.** API keys (`sk-…`, `xai-…`), GitHub, GitLab, Slack, AWS, Supabase, Stripe, Google, npm and
-  Tailscale tokens, JWTs, private keys, `Bearer` headers, passwords in URLs, `password=`-style values and
-  `NAME_KEY=` / `NAME_SECRET=` / `NAME_TOKEN=` / `NAME_PASSWORD=` values, and email addresses are replaced before
-  an excerpt is exported or written into a lesson ([lessons/redact.py](../lessons/redact.py)).
+- **Redaction.** API keys (`sk-…`, `xai-…`), GitHub, GitLab, Slack (tokens and webhooks), AWS, Supabase,
+  Stripe, Google, SendGrid, Hugging Face, Twilio, npm and Tailscale tokens, JWTs, private keys, `Bearer` and
+  `Basic` headers, passwords in URLs, `password=`-style and quoted JSON values, `NAME_KEY=` / `NAME_SECRET=` /
+  `NAME_TOKEN=` / `NAME_PASSWORD=` values (not variables, paths or numbers), and email addresses are replaced
+  before an excerpt is exported or written into a lesson ([lessons/redact.py](../lessons/redact.py)).
   Redaction is pattern-based and will miss things, so read lessons before you share them.
 - **Nothing is uploaded.** There is no telemetry and no server. Lessons are plain Markdown files: delete
   `~/.lessons` and they are gone.
