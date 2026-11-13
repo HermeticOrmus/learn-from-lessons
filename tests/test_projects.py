@@ -111,7 +111,7 @@ class LiveMomentsTest(unittest.TestCase):
                 sources.SOURCES.update(old_src)
                 os.environ["LESSONS_EXCLUDE_FILE"] = old_env or os.devnull
         self.assertEqual({m["session"] for m in out}, {"a"})
-        self.assertIn("fake:b", prints)  # read, but its moment held a text word
+        self.assertNotIn("fake:b", prints)  # its moment held a text word: stays open
         self.assertNotIn("fake:c", prints)  # a skipped session is never read
 
 
@@ -141,3 +141,111 @@ class SourcesUseTheFileTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFindingsTest(unittest.TestCase):
+    """Cases from the independent review of the exclude PR."""
+
+    def test_tool_names_and_the_project_header_are_checked(self):
+        m = {"cwd": "/own", "project": "/own", "trigger": {"text": "no"},
+             "context": [{"text": "ok", "tool": "mcp__acme__search"}], "followup": []}
+        self.assertEqual(dream.allowed_moments([m], ["text:acme"]), [])
+        m2 = dict(m, cwd="/srv/acme-site", project="/srv/acme-site", context=[])
+        self.assertEqual(dream.allowed_moments([m2], ["text:acme"]), [])
+
+    def test_a_glob_covers_the_folders_below(self):
+        self.assertTrue(projects.excluded("/home/u/secret/sub", ["/home/*/secret"]))
+        self.assertFalse(projects.excluded("/home/u/secrets", ["/home/*/secret"]))
+
+    def test_a_path_with_brackets_that_exists_is_a_plain_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = os.path.join(tmp, "[work]")
+            os.makedirs(os.path.join(d, "app"))
+            self.assertTrue(projects.excluded(os.path.join(d, "app"), [d]))
+
+    def test_a_symlinked_folder_is_matched_by_its_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = os.path.join(tmp, "clients", "acme")
+            os.makedirs(real)
+            link = os.path.join(tmp, "a")
+            os.symlink(real, link)
+            self.assertTrue(projects.excluded(link, [os.path.join(tmp, "clients")]))
+
+    def test_lessons_that_match_are_found_by_evidence_and_words(self):
+        clean = {"id": "a", "title": "Ask before push", "scope": "global",
+                 "evidence": [{"ref": "/x:1", "project": "/own", "quote": "no, wait"}]}
+        by_folder = dict(clean, id="b", evidence=[{"ref": "/x:2", "project": "/c/acme/web", "quote": "no"}])
+        by_word = dict(clean, id="c", why="the Acme export broke")
+        by_scope = dict(clean, id="d", scope="project:/c/acme")
+        got = [l["id"] for l in projects.matching_lessons([clean, by_folder, by_word, by_scope],
+                                                          ["/c/acme", "text:acme"])]
+        self.assertEqual(got, ["b", "c", "d"])
+
+
+class DreamStopsOnExcludedLessonsTest(unittest.TestCase):
+    def test_consolidate_refuses_when_an_existing_lesson_matches(self):
+        from lessons.dream import EngineError
+        lesson = ("---\nid: x\ntitle: Acme export first\nscope: global\nkind: preference\ntrigger: t\n"
+                  "status: candidate\nevidence:\n  - ref: /x/s.jsonl:3\n    source: claude-code\n"
+                  "    date: 2026-10-01\n    quote: \"no\"\n    project: /c/acme\n---\n**Do:** d\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "lessons")
+            os.makedirs(os.path.join(out, "global"))
+            with open(os.path.join(out, "global", "x.md"), "w") as fh:
+                fh.write(lesson)
+            cand = os.path.join(tmp, "cand", "global")
+            os.makedirs(cand)
+            with open(os.path.join(cand, "y.md"), "w") as fh:
+                fh.write(lesson.replace("id: x", "id: y").replace("Acme export first", "Ask first")
+                         .replace("project: /c/acme", "project: /own"))
+            f = os.path.join(tmp, "ex")
+            with open(f, "w") as fh:
+                fh.write("/c/acme\n")
+            old = os.environ.get("LESSONS_EXCLUDE_FILE")
+            os.environ["LESSONS_EXCLUDE_FILE"] = f
+            try:
+                from types import SimpleNamespace
+                a = SimpleNamespace(shards=[], sources="", engine="fake", model="", home=os.path.join(tmp, "h"),
+                                    out=out, add_candidates=[os.path.join(tmp, "cand")], max_batches=0, batch_tokens=12000, budget_usd=0.0,
+                                    threshold=None, abstraction="medium", max_principles=10, scenarios="",
+                                    timeout=10, no_consolidate=False, consolidate_only=True, dry_run=False)
+                with self.assertRaises(EngineError) as cm:
+                    dream.run(a, engine=dream.FakeEngine(), log=lambda *x: None)
+                self.assertIn("x", str(cm.exception))
+                self.assertTrue(os.path.exists(os.path.join(out, "global", "x.md")))  # nothing deleted
+            finally:
+                os.environ["LESSONS_EXCLUDE_FILE"] = old or os.devnull
+
+    def test_add_candidates_that_match_are_dropped(self):
+        cands = [{"id": "", "title": "fine", "evidence": [{"ref": "/x:1", "project": "/own"}]},
+                 {"id": "", "title": "Acme one", "evidence": [{"ref": "/x:2", "project": "/own"}]}]
+        self.assertEqual([c["title"] for c in projects.allowed_lessons(cands, ["text:acme"])], ["fine"])
+
+
+class StateKeepsSessionsWithDroppedMomentsOpenTest(unittest.TestCase):
+    def test_a_session_with_a_dropped_moment_is_not_marked_done(self):
+        from lessons import sources
+
+        def human(sid, tool_text):
+            return Session(source="fake", id=sid, path=f"/x/{sid}.jsonl", cwd="/own", turns=[
+                Turn("user", "add the button", ref=f"/x/{sid}.jsonl:1"),
+                Turn("assistant", "Done, pushed it.", ref=f"/x/{sid}.jsonl:1"),
+                Turn("tool", tool_text, ref=f"/x/{sid}.jsonl:2"),
+                Turn("user", f"no, don't push yet ({sid})", ref=f"/x/{sid}.jsonl:3"),
+                Turn("user", "ok go on", ref=f"/x/{sid}.jsonl:4")])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            f = os.path.join(tmp, "ex")
+            with open(f, "w") as fh:
+                fh.write("text:acme\n")
+            old_env, old_src = os.environ.get("LESSONS_EXCLUDE_FILE"), dict(sources.SOURCES)
+            os.environ["LESSONS_EXCLUDE_FILE"] = f
+            sources.SOURCES["fake"] = lambda: iter([human("a", "3 rows"), human("b", "acme rows")])
+            try:
+                out, prints = dream.live_moments(None, ["fake"])
+            finally:
+                sources.SOURCES.clear()
+                sources.SOURCES.update(old_src)
+                os.environ["LESSONS_EXCLUDE_FILE"] = old_env or os.devnull
+        self.assertIn("fake:a", prints)
+        self.assertNotIn("fake:b", prints)  # re-read once the word is removed from the file

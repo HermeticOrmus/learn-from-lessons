@@ -289,8 +289,13 @@ Lessons live in `~/.lessons` (override with `--dir` or `LESSONS_DIR`).
   text:acme
   ```
 
-  With any line set, a session whose folder is unknown is skipped too. `scan` prints how many sessions and
-  moments the file kept out.
+  Folders are compared after symlinks are resolved, and a glob also matches the folders below it. Words are
+  checked on everything a moment carries into a prompt: turns, tool names and the project folder. With any line
+  set, a session whose folder is unknown is skipped too. `scan` prints how many sessions and moments the file
+  kept out. A session with a dropped moment is read again on the next run, so removing a line takes effect.
+  When a lesson already on disk matches the file, `dream` stops before any model call and names it: move or
+  delete it first. Shards written by `mine` before a `session:` line was added hold only the moment's turns;
+  run `mine` again after you change the file.
 - **Nothing is uploaded.** There is no telemetry and no server. Lessons are plain Markdown files: delete
   `~/.lessons` and they are gone.
 

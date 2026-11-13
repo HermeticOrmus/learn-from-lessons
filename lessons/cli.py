@@ -71,7 +71,8 @@ def cmd_scan(a) -> int:
                 if _is_human(s):
                     c["human sessions"] += 1
                     for m in signals.find(s):
-                        if projects.mentions((t.text for t in [*m.context, m.turn, *m.followup]), terms):
+                        turns = [*m.context, m.turn, *m.followup]
+                        if projects.mentions([s.cwd] + [x for t in turns for x in (t.text, t.tool)], terms):
                             dropped += 1
                             continue
                         kinds[m.kind] += 1
@@ -91,7 +92,7 @@ def cmd_scan(a) -> int:
     from .projects import SKIPPED, default_file
     if SKIPPED or dropped:
         print(f"\nskipped {sum(SKIPPED.values())} session(s) and {dropped} moment(s) from excluded projects "
-              f"({default_file()}).")
+              f"({default_file()}); while it has lines, sessions with no known folder are skipped too.")
     print(f"\nhuman session = not a subagent and >= {HUMAN_MIN_TURNS} user turns. {mom} moments to learn from.")
     if mom:
         print("Next: `lessons dream` to turn them into lessons (or `lessons mine --out work/shards` to export).")

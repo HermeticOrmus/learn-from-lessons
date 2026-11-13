@@ -127,21 +127,20 @@ def live_moments(state: State | None, sources: Iterable[str]) -> tuple[list[dict
             sid = f"{s.source}:{s.id}"
             if state and state.session_unchanged(sid, fp):
                 continue
-            prints[sid] = fp
-            out += allowed_moments([moment_dict(m) for m in find(s, seen)], patterns)
+            found = [moment_dict(m) for m in find(s, seen)]
+            kept = allowed_moments(found, patterns)
+            if len(kept) == len(found):  # a session with a dropped moment stays open for when the file changes
+                prints[sid] = fp
+            out += kept
     return out, prints
 
 
 def allowed_moments(moments: list[dict], patterns: list[str]) -> list[dict]:
     """Shards may predate the exclude list: drop moments from excluded folders again."""
-    from .projects import excluded, mentions, words
+    from .projects import excluded, mentions, moment_texts, words
     terms = words(patterns)
-
-    def texts(m):
-        turns = [m.get("trigger") or {}] + list(m.get("context") or []) + list(m.get("followup") or [])
-        return (t.get("text", "") for t in turns if isinstance(t, dict))
-    return [m for m in moments
-            if not excluded(m.get("cwd") or m.get("project") or "", patterns) and not mentions(texts(m), terms)]
+    return [m for m in moments if not excluded(m.get("cwd") or m.get("project") or "", patterns)
+            and not mentions(moment_texts(m), terms)]
 
 
 def shard_moments(patterns: Iterable[str]) -> list[dict]:
@@ -1278,8 +1277,10 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
                     state.set_session(sid, fp)
         if candidates:
             write_candidates(os.path.join(home, "candidates", run_id[:10]), candidates)
+    from . import projects
+    patterns = projects.load()
     for d in args.add_candidates:
-        extra = read_lessons(os.path.expanduser(d))
+        extra = projects.allowed_lessons(read_lessons(os.path.expanduser(d)), patterns)
         for l in extra:
             l.pop("path", None)  # never delete someone else's candidate files
             l["id"] = ""
@@ -1287,6 +1288,10 @@ def run(args, engine: Engine | None = None, log=print) -> dict:
 
     if not args.no_consolidate and (candidates or args.dry_run):
         existing = read_lessons(out_dir) if os.path.isdir(out_dir) else []
+        hit = projects.matching_lessons(existing, patterns)
+        if hit:  # dropping them could dissolve a principle and delete its file, so stop before any model call
+            raise EngineError(f"{len(hit)} existing lesson(s) match {projects.default_file()}: "
+                              f"{', '.join(sorted(str(l.get('id')) for l in hit))}; move or delete them first")
         result["consolidate"] = consolidate(existing, candidates, engine, out_dir=out_dir, run_id=run_id,
                                             budget_usd=args.budget_usd, dry_run=args.dry_run,
                                             threshold=args.threshold, abstraction=abstraction,
